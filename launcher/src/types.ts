@@ -13,6 +13,7 @@ export interface LauncherState {
   keepRunningOnClose: boolean;
   showBrowserDuringTurns: boolean;
   browserInteractionMode: BrowserInteractionMode;
+  codexIntegrationEnabled: boolean;
   experimentalBiggerContext: boolean;
   zeroRiskProEnabled: boolean;
   sidebarOpen: boolean;
@@ -171,6 +172,7 @@ export interface LauncherApi {
   }): Promise<{ ok: boolean; stdout: string }>;
   setMcpStep(step: number): Promise<LauncherState>;
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
+  setCodexIntegration(enabled: boolean): Promise<LauncherState>;
   setBiggerContext(enabled: boolean): Promise<LauncherState>;
   apiTokens(): Promise<ApiTokenSummary[]>;
   createApiToken(name: string): Promise<{ token: string; record: ApiTokenSummary }>;

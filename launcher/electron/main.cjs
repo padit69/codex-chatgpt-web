@@ -682,11 +682,16 @@ function registerIpc({ logger, stateStore }) {
           : "Run the browser smoke test before installing the Codex integration",
       );
     }
-    const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
+    const codexIntegration = IS_DEV_PROFILE ? false : setupState.codexIntegrationEnabled !== false;
+    const result = IS_DEV_PROFILE
+      ? await runtimeHost.setupDevCore()
+      : await runtimeHost.setupCore({ codexIntegration });
     stateStore.update({
       coreSetupComplete: true,
-      codexCatalogVerified: IS_DEV_PROFILE ? true : false,
-      codexRestartRequired: IS_DEV_PROFILE ? false : true,
+      // Nothing will fetch the catalog when Codex was never routed here, so treat that step as
+      // settled rather than leaving setup permanently incomplete.
+      codexCatalogVerified: IS_DEV_PROFILE || !codexIntegration ? true : false,
+      codexRestartRequired: IS_DEV_PROFILE || !codexIntegration ? false : true,
       zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
       ...(result.mode === "full" ? {
         mcpRuntimeInstalled: true,
@@ -703,8 +708,10 @@ function registerIpc({ logger, stateStore }) {
         message: error instanceof Error ? error.message : String(error),
       });
     });
-    if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
-    return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE };
+    // A gateway-only install never points Codex at this runtime, so Codex will never fetch the
+    // catalog and there is nothing to verify or restart.
+    if (!IS_DEV_PROFILE && codexIntegration) startCatalogVerificationMonitor({ logger, stateStore });
+    return { ok: true, stdout: result.stdout, restartRequired: !IS_DEV_PROFILE && codexIntegration };
   });
   handle("launcher:setup-mcp", async (_event, input) => {
     const currentMode = stateStore.read().browserInteractionMode;
@@ -764,6 +771,16 @@ function registerIpc({ logger, stateStore }) {
     });
     send("launcher:state-changed", state);
     if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
+    return state;
+  });
+  handle("launcher:codex-integration", (_event, enabled) => {
+    if (IS_DEV_PROFILE) throw new Error("DEV profile has no Codex integration");
+    const current = stateStore.read();
+    if (current.coreSetupComplete === true) {
+      throw new Error("Codex integration is fixed after core setup; uninstall the integration to change it");
+    }
+    const state = stateStore.update({ codexIntegrationEnabled: enabled === true });
+    send("launcher:state-changed", state);
     return state;
   });
   handle("launcher:api-tokens", () => runtimeHost.apiTokens());

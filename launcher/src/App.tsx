@@ -1152,6 +1152,9 @@ function SetupSurface({
     await api!.setupCore();
     updateState((await api!.snapshot()).state);
   });
+  const setCodexIntegration = (enabled: boolean) => run(async () => {
+    updateState(await api!.setCodexIntegration(enabled));
+  });
   const setZeroRiskPro = (enabled: boolean) => run(async () => {
     updateState(await api!.setZeroRiskPro(enabled));
   });
@@ -1188,6 +1191,16 @@ function SetupSurface({
             title={copy.stepSmoke}
           />
         </> : null}
+        {!devProfile && !manualInteraction ? (
+          <SettingRow body={copy.codexIntegrationBody} label={copy.codexIntegration}>
+            <Switch
+              checked={snapshot.state.codexIntegrationEnabled !== false}
+              // Fixed once installed: changing it would have to rewrite or restore Codex's config.
+              disabled={busy || snapshot.state.coreSetupComplete === true}
+              onChange={(checked) => setCodexIntegration(checked)}
+            />
+          </SettingRow>
+        ) : null}
         <SetupRow
           action={snapshot.state.coreSetupComplete
             ? devProfile ? copy.devReinstall : copy.reinstall
@@ -1210,6 +1223,12 @@ function SetupSurface({
         />
       </div>
 
+      {!devProfile && snapshot.state.coreSetupComplete === true
+        && snapshot.state.codexIntegrationEnabled === false ? (
+        <NoticeRow icon="check" tone="success">
+          {copy.gatewayOnlyInstalled}
+        </NoticeRow>
+      ) : null}
       {!devProfile && snapshot.state.codexRestartRequired ? (
         <NoticeRow icon="alert" tone="warning">
           {copy.restartCodex}

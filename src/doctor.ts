@@ -149,7 +149,16 @@ export async function runDoctor(): Promise<DoctorReport> {
   }
 
   const codex = inspectCodexIntegration();
-  if (!codex.installed) {
+  if (config.codexIntegration === false) {
+    checks.push(codex.installed
+      ? {
+        id: "codex",
+        status: "warning",
+        message: "Gateway-only runtime still has a Codex model route installed",
+        detail: "Run: codex-chatgpt-web route disconnect",
+      }
+      : { id: "codex", status: "ok", message: "Gateway-only runtime; Codex configuration is untouched" });
+  } else if (!codex.installed) {
     checks.push({ id: "codex", status: "error", message: "Codex model route is not installed" });
   } else if (codex.errors.length > 0) {
     checks.push({ id: "codex", status: "error", message: "Codex integration is inconsistent", detail: codex.errors.join("; ") });

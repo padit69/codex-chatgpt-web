@@ -1,6 +1,9 @@
 import type { Language } from "./types";
 
 const en = {
+  codexIntegration: "Install into Codex",
+  codexIntegrationBody: "Route Codex through this runtime so the ChatGPT Web models appear in its model picker. Turn this off for a gateway-only install: the daemon and API gateway still run, and Codex's configuration is never written.",
+  gatewayOnlyInstalled: "Gateway-only runtime. Codex's configuration was not modified.",
   apiSetupRequired: "Finish core setup first. The gateway needs the installed runtime configuration before it can start.",
   apiNav: "API gateway",
   apiTitle: "Public API gateway",
@@ -224,6 +227,9 @@ const en = {
 } as const;
 
 const zh: Record<keyof typeof en, string> = {
+  codexIntegration: "安装到 Codex",
+  codexIntegrationBody: "将 Codex 路由到本运行时，使 ChatGPT Web 模型出现在其模型选择器中。关闭后为仅网关安装：守护进程与 API 网关照常运行，且不会写入 Codex 的配置。",
+  gatewayOnlyInstalled: "仅网关运行时。未修改 Codex 的配置。",
   apiSetupRequired: "请先完成核心设置。网关需要已安装的运行时配置才能启动。",
   apiNav: "API 网关",
   apiTitle: "公开 API 网关",
@@ -447,6 +453,9 @@ const zh: Record<keyof typeof en, string> = {
 };
 
 const ja: Record<keyof typeof en, string> = {
+  codexIntegration: "Codex に組み込む",
+  codexIntegrationBody: "Codex をこのランタイム経由にして、ChatGPT Web モデルをモデルピッカーに表示します。オフにするとゲートウェイ専用インストールになり、デーモンと API ゲートウェイは動作したまま、Codex の設定は書き換えられません。",
+  gatewayOnlyInstalled: "ゲートウェイ専用ランタイムです。Codex の設定は変更していません。",
   apiSetupRequired: "先にコア設定を完了してください。ゲートウェイの起動には、インストール済みのランタイム設定が必要です。",
   apiNav: "API ゲートウェイ",
   apiTitle: "公開 API ゲートウェイ",

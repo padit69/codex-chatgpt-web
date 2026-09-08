@@ -1071,7 +1071,7 @@ class RuntimeHost {
     }
   }
 
-  async setupCore() {
+  async setupCore({ codexIntegration = true } = {}) {
     this.assertProductionProfile("Codex integration setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const existing = this.runtimeConfigSnapshot();
@@ -1091,13 +1091,17 @@ class RuntimeHost {
         mode: interactionMode,
         refreshCapabilities: interactionMode === "automatic",
       }),
-      "--replace-codex-route",
+      ...(codexIntegration ? ["--replace-codex-route"] : ["--no-codex-route"]),
       "--acknowledge-unofficial",
       "--restart-service",
     ];
     const result = await this.runSetup("core-setup", args, {
-      message: "Installing ChatGPT Web models into Codex",
-      successMessage: "Codex integration installed",
+      message: codexIntegration
+        ? "Installing ChatGPT Web models into Codex"
+        : "Installing the gateway-only runtime",
+      successMessage: codexIntegration
+        ? "Codex integration installed"
+        : "Gateway-only runtime installed; Codex configuration untouched",
       timeoutMs: CORE_SETUP_TIMEOUT_MS,
     });
     return { ...result, mode };

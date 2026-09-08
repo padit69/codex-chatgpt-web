@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld("codexWebLauncher", {
   setMcpStep: (step) => ipcRenderer.invoke("launcher:set-mcp-step", step),
   setAutostart: (enabled) => ipcRenderer.invoke("launcher:autostart", enabled),
   setBiggerContext: (enabled) => ipcRenderer.invoke("launcher:bigger-context", enabled),
+  setCodexIntegration: (enabled) => ipcRenderer.invoke("launcher:codex-integration", enabled),
   apiTokens: () => ipcRenderer.invoke("launcher:api-tokens"),
   createApiToken: (name) => ipcRenderer.invoke("launcher:api-token-create", name),
   revokeApiToken: (id) => ipcRenderer.invoke("launcher:api-token-revoke", id),

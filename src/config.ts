@@ -96,6 +96,11 @@ export interface AppConfig {
    * unauthenticated Codex Responses route is never the surface an operator exposes.
    */
   gateway?: ApiGatewayConfig;
+  /**
+   * False for a gateway-only installation: the daemon and its API gateway run, but Codex's own
+   * `config.toml` is never written. Absent means the historical default of routing Codex.
+   */
+  codexIntegration?: boolean;
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
   tunnel?: TunnelConfig;
@@ -480,6 +485,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
     if (activeTunnel && JSON.stringify(activeTunnel) !== JSON.stringify(parsed.tunnel)) {
       throw new Error(`Active tunnel does not match browserInteractionMode in ${path}; rerun MCP setup`);
     }
+  }
+  if (parsed.codexIntegration !== undefined && typeof parsed.codexIntegration !== "boolean") {
+    throw new Error(`Invalid codexIntegration in ${path}`);
   }
   if (parsed.gateway !== undefined) {
     const gateway = parsed.gateway;

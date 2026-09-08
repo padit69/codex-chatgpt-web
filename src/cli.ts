@@ -77,6 +77,7 @@ Setup options:
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
   --replace-codex-route        Reversibly replace existing Responses or Voice route settings
+  --no-codex-route             Gateway-only install: never write Codex's configuration
   --subagent-protocol MODE     compatibility-v1 (default) or native (advanced)
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
@@ -314,6 +315,8 @@ async function setupCommand(args: string[]): Promise<void> {
   }
   if (zeroRiskPro || zeroRiskDefault) options.zeroRiskProEnabled = zeroRiskPro;
   options.replaceCodexRoute = takeFlag(args, "--replace-codex-route");
+  if (takeFlag(args, "--no-codex-route")) options.codexIntegration = false;
+  else if (takeFlag(args, "--codex-route")) options.codexIntegration = true;
   options.restartService = takeFlag(args, "--restart-service");
   assertNoArgs(args);
 
