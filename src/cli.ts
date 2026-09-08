@@ -24,6 +24,11 @@ import { formatDoctorReport, runDoctor } from "./doctor";
 import { runChatGptMcpMain } from "./adapters/chatgpt-web/mcp-main";
 import { runCommand } from "./process";
 import { createApiToken, listApiTokens, revokeAllApiTokens, revokeApiToken } from "./api-tokens";
+import {
+  DEFAULT_MAX_CHATGPT_BROWSER_TABS,
+  MAX_CHATGPT_BROWSER_TABS_LIMIT,
+  resolveMaxChatGptBrowserTabs,
+} from "./adapters/chatgpt-web/concurrency";
 import { DEFAULT_GATEWAY_PORT } from "./gateway";
 import { startServer } from "./server";
 import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, interruptActiveTurn, restartService, startService, stopService, uninstallService } from "./service";
@@ -53,6 +58,7 @@ Usage:
   codex-chatgpt-web serve
   codex-chatgpt-web gateway <status|enable|disable> [--port NUMBER] [--json]
   codex-chatgpt-web token <list|create NAME|revoke ID|revoke-all> [--json]
+  codex-chatgpt-web tabs [COUNT] [--json]
   codex-chatgpt-web mcp [--broker-socket PATH]
   codex-chatgpt-web service <status|install|start|restart|stop|cancel-turns>
   codex-chatgpt-web tunnel <status|start|restart|stop|key-import>
@@ -606,6 +612,32 @@ async function gatewayCommand(args: string[]): Promise<void> {
     : "Gateway disabled. Restart the daemon to apply it.\n");
 }
 
+async function tabsCommand(args: string[]): Promise<void> {
+  const json = takeFlag(args, "--json");
+  const requested = args.shift();
+  assertNoArgs(args);
+  const config = loadConfigForSetup();
+  if (requested === undefined) {
+    const current = config.maxBrowserTabs ?? DEFAULT_MAX_CHATGPT_BROWSER_TABS;
+    if (json) {
+      stdout.write(`${JSON.stringify({ maxBrowserTabs: current, limit: MAX_CHATGPT_BROWSER_TABS_LIMIT })}\n`);
+      return;
+    }
+    stdout.write(`Simultaneous ChatGPT browser turns: ${current} (max ${MAX_CHATGPT_BROWSER_TABS_LIMIT}).\n`);
+    return;
+  }
+  const maxBrowserTabs = resolveMaxChatGptBrowserTabs(Number(requested));
+  saveConfig({ ...config, maxBrowserTabs });
+  if (json) {
+    stdout.write(`${JSON.stringify({ maxBrowserTabs })}\n`);
+    return;
+  }
+  stdout.write(
+    `Simultaneous ChatGPT browser turns set to ${maxBrowserTabs}. Restart the launcher to apply it.\n`
+    + "Each turn is a real ChatGPT document; raising this makes the account's traffic more parallel.\n",
+  );
+}
+
 async function tokenCommand(args: string[]): Promise<void> {
   const action = args.shift();
   const json = takeFlag(args, "--json");
@@ -722,6 +754,7 @@ async function main(): Promise<void> {
   }
   else if (command === "gateway") await gatewayCommand(args);
   else if (command === "token") await tokenCommand(args);
+  else if (command === "tabs") await tabsCommand(args);
   else if (command === "tunnel") await tunnelCommand(args);
   else if (command === "open") await openCommand(args);
   else if (command === "uninstall") await uninstallCommand(args);

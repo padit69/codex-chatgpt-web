@@ -1031,6 +1031,14 @@ async function start() {
     publishOperation,
     supervisor: runtimeSupervisor,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
+    getMaxBrowserTabs: () => {
+      try {
+        return runtimeSupervisor?.readConfig()?.maxBrowserTabs;
+      } catch {
+        // A configuration that cannot be read yet simply keeps the built-in cap.
+        return undefined;
+      }
+    },
   });
   const configuredInteractionMode = runtimeHost.runtimeConfigSnapshot().config?.browserInteractionMode;
   if ((configuredInteractionMode === "automatic" || configuredInteractionMode === "manual")

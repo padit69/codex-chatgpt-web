@@ -29,7 +29,19 @@ const CHATGPT_ORIGIN = "https://chatgpt.com";
 const IDLE_BROWSER_URL = "data:text/html;charset=utf-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%3Ctitle%3ECodex%20Web%20GPT%3C%2Ftitle%3E%3C%2Fhead%3E%3Cbody%3E%3C%2Fbody%3E%3C%2Fhtml%3E#codex-web-gpt-browser-host";
 const PRIMARY_VIEW_BOOTSTRAP_TIMEOUT_MS = 10_000;
 const MAX_BROWSER_VIEW_DIMENSION = 16_384;
-const MAX_BROWSER_TABS = 5;
+const DEFAULT_MAX_BROWSER_TABS = 5;
+const MAX_BROWSER_TABS_LIMIT = 20;
+
+/**
+ * Resolve the cap per call so it can change without restarting the launcher window. A plain
+ * function rather than a method: snapshot() is also invoked against bare objects in tests.
+ */
+function resolveMaxBrowserTabs(getMaxBrowserTabs) {
+  const value = typeof getMaxBrowserTabs === "function" ? getMaxBrowserTabs() : undefined;
+  return Number.isInteger(value) && value >= 1 && value <= MAX_BROWSER_TABS_LIMIT
+    ? value
+    : DEFAULT_MAX_BROWSER_TABS;
+}
 const MAX_CANCELLED_TURN_TRACES = 256;
 const MANUAL_SUBMIT_TIMEOUT_MS = 30_000;
 const MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS = 120_000;
@@ -317,6 +329,8 @@ class BrowserHost {
     showWindow = () => {},
     clipboardApi = clipboard,
     getBrowserInteractionMode = () => "automatic",
+    // Resolved per call so an operator can change the cap without restarting the launcher window.
+    getMaxBrowserTabs = () => DEFAULT_MAX_BROWSER_TABS,
   }) {
     if (typeof getConnectorName !== "function") {
       throw new Error("Browser host connector-name resolver is unavailable");
@@ -346,6 +360,7 @@ class BrowserHost {
     this.showWindow = showWindow;
     this.clipboard = clipboardApi;
     this.getBrowserInteractionMode = getBrowserInteractionMode;
+    this.getMaxBrowserTabs = getMaxBrowserTabs;
     this.runBrowserHelperOperation = runBrowserHelperOperation;
     this.verifyConnectorWithBrowserHelper = verifyConnectorWithBrowserHelper;
     this.surfaceId = randomBytes(24).toString("base64url");
@@ -521,15 +536,15 @@ class BrowserHost {
   }
 
   async createTurnTab(traceId, helperPid, conversationKey, connectorIdentity) {
-    if (this.turnTabs.size >= MAX_BROWSER_TABS
+    if (this.turnTabs.size >= resolveMaxBrowserTabs(this.getMaxBrowserTabs)
       && !BrowserHost.prototype.evictOldestReclaimableTurnTab.call(this)) {
       throw new Error(
-        `ChatGPT Web already has ${MAX_BROWSER_TABS} browser tabs; close one before starting another turn to avoid excessive parallel traffic on the ChatGPT account`,
+        `ChatGPT Web already has ${resolveMaxBrowserTabs(this.getMaxBrowserTabs)} browser tabs; close one before starting another turn to avoid excessive parallel traffic on the ChatGPT account`,
       );
     }
     const id = randomBytes(12).toString("base64url");
     const surfaceId = randomBytes(24).toString("base64url");
-    const ordinal = Array.from({ length: MAX_BROWSER_TABS }, (_unused, index) => index + 1)
+    const ordinal = Array.from({ length: resolveMaxBrowserTabs(this.getMaxBrowserTabs) }, (_unused, index) => index + 1)
       .find(candidate => ![...this.turnTabs.values()].some(tab => tab.ordinal === candidate));
     if (!ordinal) throw new Error("ChatGPT Web browser tab allocation is inconsistent");
     const view = new WebContentsView({
@@ -592,14 +607,14 @@ class BrowserHost {
   }
 
   createManualTurnTab(traceId, helperPid, conversationKey, prompt, manualSubmitTimeoutMs) {
-    if (this.turnTabs.size >= MAX_BROWSER_TABS
+    if (this.turnTabs.size >= resolveMaxBrowserTabs(this.getMaxBrowserTabs)
       && !BrowserHost.prototype.evictOldestReclaimableTurnTab.call(this)) {
       throw new Error(
-        `ChatGPT Web already has ${MAX_BROWSER_TABS} browser tabs; close one before starting another turn to avoid excessive parallel traffic on the ChatGPT account`,
+        `ChatGPT Web already has ${resolveMaxBrowserTabs(this.getMaxBrowserTabs)} browser tabs; close one before starting another turn to avoid excessive parallel traffic on the ChatGPT account`,
       );
     }
     const id = randomBytes(12).toString("base64url");
-    const ordinal = Array.from({ length: MAX_BROWSER_TABS }, (_unused, index) => index + 1)
+    const ordinal = Array.from({ length: resolveMaxBrowserTabs(this.getMaxBrowserTabs) }, (_unused, index) => index + 1)
       .find(candidate => ![...this.turnTabs.values()].some(tab => tab.ordinal === candidate));
     if (!ordinal) throw new Error("ChatGPT Web browser tab allocation is inconsistent");
     const view = new WebContentsView({
@@ -1273,7 +1288,7 @@ class BrowserHost {
             ...[...this.turnTabs.values()].map((tab) => this.tabSnapshot(tab)),
           ]
         : [homeTab],
-      maxTabs: MAX_BROWSER_TABS,
+      maxTabs: resolveMaxBrowserTabs(this.getMaxBrowserTabs),
     };
   }
 

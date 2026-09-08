@@ -7,6 +7,7 @@ import {
   CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
 } from "./chatgpt-web-models";
+import { resolveMaxChatGptBrowserTabs } from "./adapters/chatgpt-web/concurrency";
 import type { ApiGatewayConfig } from "./gateway";
 import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
@@ -101,6 +102,11 @@ export interface AppConfig {
    * `config.toml` is never written. Absent means the historical default of routing Codex.
    */
   codexIntegration?: boolean;
+  /**
+   * Simultaneous ChatGPT browser turns. Each one is a real document in the signed-in account, so
+   * raising it increases both memory use and how parallel the account's traffic looks.
+   */
+  maxBrowserTabs?: number;
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
   tunnel?: TunnelConfig;
@@ -489,6 +495,13 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.codexIntegration !== undefined && typeof parsed.codexIntegration !== "boolean") {
     throw new Error(`Invalid codexIntegration in ${path}`);
   }
+  if (parsed.maxBrowserTabs !== undefined) {
+    try {
+      resolveMaxChatGptBrowserTabs(parsed.maxBrowserTabs);
+    } catch (error) {
+      throw new Error(`Invalid maxBrowserTabs in ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   if (parsed.gateway !== undefined) {
     const gateway = parsed.gateway;
     if (!gateway || typeof gateway !== "object" || Array.isArray(gateway)) {
@@ -600,6 +613,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
+      ...(config.maxBrowserTabs !== undefined ? { maxBrowserTabs: config.maxBrowserTabs } : {}),
     },
   };
 }
