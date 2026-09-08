@@ -8,7 +8,14 @@ import {
   resolveChatGptWebContextLimits,
 } from "./chatgpt-web-models";
 import type { AppConfig } from "./config";
+import { downloadAnswerImages } from "./adapters/chatgpt-web/answer-images";
 import { GatewaySessionStore, type GatewaySessionMessage } from "./gateway-sessions";
+import {
+  GatewayFileStore,
+  gatewayFileSigningKey,
+  isGatewayFileId,
+  verifyGatewayFileUrl,
+} from "./gateway-files";
 import { formatErrorResponse } from "./bridge";
 import { readJsonRequestBody } from "./http-body";
 import { VERSION } from "./version";
@@ -44,6 +51,7 @@ export interface ApiGatewayDependencies {
   handleResponses: GatewayResponsesHandler;
   /** Test seam; defaults to a store private to this listener. */
   sessions?: GatewaySessionStore;
+  files?: GatewayFileStore;
   /** Test seam for the token store location. */
   tokenStorePath?: string;
 }
@@ -326,6 +334,47 @@ export function streamAndRemember(
   });
 }
 
+/**
+ * Replace every ChatGPT-hosted picture in a completed answer with a local, signed link.
+ *
+ * One prompt can produce several pictures, so this rewrites all of them; a picture that cannot be
+ * downloaded keeps its original link rather than failing an answer that already exists.
+ */
+async function rewriteAnswerImages(
+  body: Record<string, unknown>,
+  config: AppConfig,
+  files: GatewayFileStore,
+  signingKey: string,
+): Promise<Record<string, unknown>> {
+  const descriptorPath = config.browserHostDescriptorPath;
+  if (!descriptorPath || !Array.isArray(body.output)) return body;
+  const output = [];
+  for (const item of body.output) {
+    if (!isRecord(item) || !Array.isArray(item.content)) {
+      output.push(item);
+      continue;
+    }
+    const content = [];
+    for (const part of item.content) {
+      if (!isRecord(part) || typeof part.text !== "string") {
+        content.push(part);
+        continue;
+      }
+      try {
+        const rewritten = await downloadAnswerImages(part.text, { descriptorPath, signingKey, store: files });
+        content.push(rewritten.downloaded > 0 ? { ...part, text: rewritten.markdown } : part);
+      } catch (error) {
+        console.warn(
+          `[codex-chatgpt-web] generated images could not be downloaded: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        content.push(part);
+      }
+    }
+    output.push({ ...item, content });
+  }
+  return { ...body, output };
+}
+
 export function startApiGateway(
   config: AppConfig,
   dependencies: ApiGatewayDependencies,
@@ -336,6 +385,8 @@ export function startApiGateway(
     throw new Error("The API gateway port must differ from the Responses port");
   }
   const sessions = dependencies.sessions ?? new GatewaySessionStore();
+  const files = dependencies.files ?? new GatewayFileStore();
+  const fileSigningKey = gatewayFileSigningKey(config.controlToken);
   const authorize = (req: Request): { ok: true; tokenId: string } | { ok: false; response: Response } => {
     const presented = presentedGatewayToken(req.headers);
     if (!presented) {
@@ -365,6 +416,37 @@ export function startApiGateway(
           status: "ok",
           service: "codex-chatgpt-web-gateway",
           version: VERSION,
+        }));
+      }
+      if (req.method === "GET" && url.pathname.startsWith("/v1/files/")) {
+        // Signed links are self-authenticating on purpose: a browser, an <img> tag or a chat
+        // client cannot attach the gateway's bearer header to a plain link.
+        const id = url.pathname.slice("/v1/files/".length);
+        const verdict = verifyGatewayFileUrl(
+          id,
+          url.searchParams.get("exp"),
+          url.searchParams.get("sig"),
+          fileSigningKey,
+        );
+        if (!verdict.ok) {
+          return withCors(formatErrorResponse(
+            verdict.reason === "expired" ? 410 : 403,
+            "invalid_request_error",
+            verdict.reason === "expired" ? "This file link has expired." : "This file link is not valid.",
+          ));
+        }
+        const stored = isGatewayFileId(id) ? files.read(id) : undefined;
+        if (!stored) {
+          return withCors(formatErrorResponse(404, "invalid_request_error", "This file is no longer stored."));
+        }
+        return withCors(new Response(stored.bytes.buffer.slice(
+          stored.bytes.byteOffset,
+          stored.bytes.byteOffset + stored.bytes.byteLength,
+        ) as ArrayBuffer, {
+          headers: {
+            "content-type": stored.contentType,
+            "cache-control": "private, max-age=3600",
+          },
         }));
       }
       const auth = authorize(req);
@@ -402,9 +484,15 @@ export function startApiGateway(
         let sessionId: string | undefined;
         let promptText = "";
         let persistentChat = false;
+        const isImageRoute = raw.model === CHATGPT_WEB_IMAGE_MODEL_ROUTE.slug;
         try {
           assertRoutableModel(raw.model, config);
           if (raw.session_id !== undefined) sessionId = assertGatewaySessionId(raw.session_id);
+          if (isImageRoute && raw.stream === true) {
+            // An image turn renders nothing until its tool finishes, so there is no stream to
+            // deliver; buffering it silently would misreport the transport the caller asked for.
+            throw new Error("The image route does not stream. Send the request without \"stream\": true.");
+          }
           if (raw.temporary_chat !== undefined) {
             if (typeof raw.temporary_chat !== "boolean") throw new Error("temporary_chat must be a boolean");
             persistentChat = raw.temporary_chat === false;
@@ -446,17 +534,22 @@ export function startApiGateway(
         // Echo the session back so the caller can keep using it. A header carries it for both
         // transports; a streamed body has no place to add a field.
         if (sessionId) response.headers.set("x-session-id", sessionId);
-        if (!sessionId || !response.ok || !response.body) return withCors(response);
         const session = sessionId;
         const prompt = promptText;
         const remember = (answer: string) => {
-          if (!answer.trim()) return;
+          if (!session || !answer.trim()) return;
           sessions.append(session, [
             ...(prompt ? [{ role: "user" as const, text: prompt }] : []),
             { role: "assistant" as const, text: answer },
           ]);
         };
-        if (raw.stream === true) return withCors(streamAndRemember(response, remember));
+        // A response is buffered when there is something to do with its body: record the exchange
+        // for a session, or replace ChatGPT-hosted pictures with local links. Otherwise it is
+        // returned untouched, which is what keeps an ordinary stream unbuffered.
+        if (!response.ok || !response.body || (!session && !isImageRoute)) return withCors(response);
+        if (raw.stream === true) {
+          return withCors(session ? streamAndRemember(response, remember) : response);
+        }
         const body = await response.text();
         let parsed: unknown;
         try {
@@ -464,9 +557,12 @@ export function startApiGateway(
         } catch {
           return withCors(new Response(body, response));
         }
+        if (isImageRoute && isRecord(parsed) && parsed.status === "completed") {
+          parsed = await rewriteAnswerImages(parsed as Record<string, unknown>, config, files, fileSigningKey);
+        }
         if (isRecord(parsed) && parsed.status === "completed") remember(completedAnswerText(parsed));
         // Surface the session on the body too, so a non-streaming caller sees it without headers.
-        const enriched = isRecord(parsed) ? { ...parsed, session_id: session } : parsed;
+        const enriched = isRecord(parsed) && session ? { ...parsed, session_id: session } : parsed;
         return withCors(new Response(JSON.stringify(enriched), {
           status: response.status,
           statusText: response.statusText,

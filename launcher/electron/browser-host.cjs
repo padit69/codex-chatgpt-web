@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { createHash, randomBytes } = require("node:crypto");
-const { clipboard, WebContentsView, powerMonitor, powerSaveBlocker, shell } = require("electron");
+const { clipboard, session, WebContentsView, powerMonitor, powerSaveBlocker, shell } = require("electron");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 const {
   runBrowserHelperOperation,
@@ -31,6 +31,7 @@ const PRIMARY_VIEW_BOOTSTRAP_TIMEOUT_MS = 10_000;
 const MAX_BROWSER_VIEW_DIMENSION = 16_384;
 const DEFAULT_MAX_BROWSER_TABS = 5;
 const MAX_BROWSER_TABS_LIMIT = 20;
+const MAX_FETCHED_CONTENT_BYTES = 32 * 1024 * 1024;
 
 /**
  * Resolve the cap per call so it can change without restarting the launcher window. A plain
@@ -1160,6 +1161,33 @@ class BrowserHost {
         finish(error instanceof Error ? error : new Error(String(error)));
       }
     });
+  }
+
+  /**
+   * Fetch a ChatGPT-hosted URL with this launcher's signed-in session and return its bytes.
+   *
+   * Only chatgpt.com content is allowed: this is a capability for retrieving what a turn already
+   * produced, not a general proxy that would let a caller borrow the session for anything.
+   */
+  async fetchChatGptContent(rawUrl) {
+    let parsed;
+    try {
+      parsed = new URL(String(rawUrl));
+    } catch {
+      throw new Error("Content URL is invalid");
+    }
+    if (parsed.origin !== CHATGPT_ORIGIN || !parsed.pathname.startsWith("/backend-api/")) {
+      throw new Error("Only ChatGPT backend content may be fetched");
+    }
+    const partitionSession = session.fromPartition(this.partition);
+    const response = await partitionSession.fetch(parsed.toString());
+    if (!response.ok) throw new Error(`ChatGPT returned HTTP ${response.status} for the requested content`);
+    const contentType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.byteLength > MAX_FETCHED_CONTENT_BYTES) {
+      throw new Error("Requested ChatGPT content exceeds the transferable size limit");
+    }
+    return { contentType, base64: bytes.toString("base64"), bytes: bytes.byteLength };
   }
 
   async refreshChatGptHomeDocument() {

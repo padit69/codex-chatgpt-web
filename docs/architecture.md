@@ -191,6 +191,21 @@ the launcher. Codex keeps using the original port unchanged.
   because OpenAI disables first-party capabilities such as image generation inside it. An opted-out
   turn keeps only the authentication check, and its conversation is saved in the account like any
   other chat.
+- `chatgpt-web/image` generates a picture. It is advertised by the gateway only, implies an ordinary
+  conversation, and does not use the Codex transport envelope: that envelope tells the model it is a
+  text backend whose non-text results must be restated as Markdown, which makes ChatGPT's image tool
+  refuse a generation request as an edit with no target. The route does not stream, because nothing
+  renders until the tool finishes.
+- A generated picture is served from a chatgpt.com content URL that answers 403 without the browser
+  session, so the bytes are fetched through the launcher, stored under the application home, and the
+  answer is rewritten to a signed gateway link. Every picture in an answer is copied; one that
+  cannot be fetched keeps its original link rather than failing an answer that already exists. The
+  launcher's fetch capability is limited to ChatGPT backend content, so it is not a general proxy
+  for borrowing the session.
+- `GET /v1/files/<id>` needs no bearer token because its link is signed and expiring: a browser, an
+  `<img>` tag or a chat client cannot attach a header to a plain link. The signature covers the
+  exact file and its expiry and is keyed on the daemon's control token, so rotating that token
+  invalidates every outstanding link.
 - A gateway turn always runs read-only, even while the daemon runs the Full harness for Codex.
   An API caller owns no sandbox, approval UI, or workspace, so it is never handed the local tool
   capability; Codex keeps its own Full-mode tools on the original port. Zero Risk is refused

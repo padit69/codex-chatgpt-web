@@ -683,6 +683,57 @@ export async function notifyLauncherTurn(
   }
 }
 
+/**
+ * Ask the launcher to fetch ChatGPT-hosted content with its own signed-in session.
+ *
+ * The daemon has no ChatGPT cookies of its own, and opening a second CDP connection contends with
+ * the browser helper that is driving the turn, so retrieval goes through the authenticated control
+ * channel the launcher already exposes.
+ */
+export async function fetchLauncherChatGptContent(
+  descriptorPath: string,
+  url: string,
+  abortSignal?: AbortSignal,
+  timeoutMs = 60_000,
+): Promise<{ contentType: string; base64: string; bytes: number }> {
+  const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  abortSignal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(abort, timeoutMs);
+  try {
+    const response = await fetch(`${descriptor.control.endpoint}/v1/content/fetch`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${descriptor.control.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ url }),
+      signal: controller.signal,
+    });
+    const payload = await response.json() as {
+      contentType?: unknown;
+      base64?: unknown;
+      bytes?: unknown;
+      error?: unknown;
+    };
+    if (!response.ok) {
+      throw new Error(typeof payload?.error === "string" ? payload.error : `launcher returned HTTP ${response.status}`);
+    }
+    if (typeof payload.contentType !== "string" || typeof payload.base64 !== "string") {
+      throw new Error("launcher returned an invalid content payload");
+    }
+    return {
+      contentType: payload.contentType,
+      base64: payload.base64,
+      bytes: typeof payload.bytes === "number" ? payload.bytes : 0,
+    };
+  } finally {
+    clearTimeout(timer);
+    abortSignal?.removeEventListener("abort", abort);
+  }
+}
+
 export async function releaseLauncherRetainedConversation(
   descriptorPath: string,
   conversationKey: string,

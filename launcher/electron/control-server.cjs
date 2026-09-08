@@ -98,6 +98,7 @@ class BrowserControlServer {
       || request.url === "/v1/turn/end";
     const isTurnRelease = request.url === "/v1/turn/release";
     const isSessionInspect = request.url === "/v1/session/inspect";
+    const isContentFetch = request.url === "/v1/content/fetch";
     const manualAction = new Map([
       ["/v1/manual/start", "start"],
       ["/v1/manual/wait-sent", "wait-sent"],
@@ -106,7 +107,8 @@ class BrowserControlServer {
       ["/v1/manual/end", "end"],
       ["/v1/manual/cancel", "cancel"],
     ]).get(request.url);
-    if (request.method !== "POST" || (!isTurn && !isTurnRelease && !isSessionInspect && !manualAction)) {
+    if (request.method !== "POST"
+      || (!isTurn && !isTurnRelease && !isSessionInspect && !isContentFetch && !manualAction)) {
       writeJson(response, 404, { error: "not_found" });
       return;
     }
@@ -118,6 +120,13 @@ class BrowserControlServer {
       const preferences = this.getPreferences();
       const host = this.getBrowserHost();
       if (!host) throw new Error("browser host is not ready");
+      if (isContentFetch) {
+        // The daemon cannot fetch ChatGPT-hosted content itself: the session lives in this
+        // launcher's private browser partition. Fetching here keeps that session in one place.
+        const result = await host.fetchChatGptContent(body?.url);
+        writeJson(response, 200, result);
+        return;
+      }
       if (isSessionInspect) {
         if (host.browserInteractionMode() === "manual") {
           const error = new Error(
