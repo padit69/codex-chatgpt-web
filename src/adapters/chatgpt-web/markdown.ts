@@ -13,8 +13,29 @@ const turndown = new TurndownService({
 
 turndown.use(gfm);
 turndown.remove(["button", "script", "style"]);
+/** Pictures the bridge itself projected as the answer, as opposed to ChatGPT's UI chrome. */
+export const CODEX_ANSWER_IMAGE_ATTRIBUTE = "data-codex-answer-image";
+
+function isAnswerImage(node: Node): boolean {
+  return node.nodeName === "IMG"
+    && (node as HTMLElement).getAttribute?.(CODEX_ANSWER_IMAGE_ATTRIBUTE) !== null
+    && (node as HTMLElement).getAttribute?.(CODEX_ANSWER_IMAGE_ATTRIBUTE) !== undefined;
+}
+
+// ChatGPT's DOM is full of avatars, icons and decorative art, so images are dropped by default.
+// A picture the bridge deliberately projected as the answer is the exception and must survive.
+turndown.addRule("answerImage", {
+  filter: node => isAnswerImage(node),
+  replacement: (_content, node) => {
+    const element = node as HTMLElement;
+    const source = element.getAttribute("src") ?? "";
+    if (!source) return "";
+    const alt = element.getAttribute("alt") ?? "";
+    return `![${alt}](${source})`;
+  },
+});
 turndown.addRule("removeImages", {
-  filter: node => ["IMG", "PICTURE", "SOURCE"].includes(node.nodeName),
+  filter: node => ["IMG", "PICTURE", "SOURCE"].includes(node.nodeName) && !isAnswerImage(node),
   replacement: () => "",
 });
 turndown.addRule("removeSvg", {

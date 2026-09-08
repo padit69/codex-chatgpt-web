@@ -4143,7 +4143,9 @@ export class ChatGptBrowserWorker {
           // A stable key so a redrawn but unchanged picture does not look like new content.
           key: `image:${uniqueAnswerImages.join("|")}`,
           tag: "p",
-          html: uniqueAnswerImages.map(source => `<p><img src="${source}"></p>`).join(""),
+          html: uniqueAnswerImages
+            .map((source, index) => `<p><img data-codex-answer-image="1" alt="generated image ${index + 1}" src="${source}"></p>`)
+            .join(""),
           text: imageMarkdown,
           streamable: false,
         });
