@@ -593,3 +593,44 @@ test("authorized launcher uninstall does not re-probe an already stopped full ru
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("gateway status answers before core setup instead of failing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-gateway-status-"));
+  const home = join(root, "app");
+  mkdirSync(home, { recursive: true });
+  try {
+    // The launcher queries this whenever its API page opens, which is reachable before setup.
+    const status = await runCli(["gateway", "status", "--json"], {
+      PATH: process.env.PATH,
+      HOME: root,
+      CODEX_CHATGPT_WEB_HOME: home,
+    });
+    expect(status.exitCode).toBe(0);
+    expect(JSON.parse(status.stdout)).toMatchObject({
+      enabled: false,
+      configured: false,
+      host: "127.0.0.1",
+      tokens: 0,
+    });
+
+    // Enabling still needs the configuration, but must say which step is missing.
+    const enable = await runCli(["gateway", "enable"], {
+      PATH: process.env.PATH,
+      HOME: root,
+      CODEX_CHATGPT_WEB_HOME: home,
+    });
+    expect(enable.exitCode).toBe(1);
+    expect(enable.stderr).toContain("Complete core setup first");
+
+    // Token bookkeeping is independent of the runtime configuration.
+    const tokens = await runCli(["token", "list", "--json"], {
+      PATH: process.env.PATH,
+      HOME: root,
+      CODEX_CHATGPT_WEB_HOME: home,
+    });
+    expect(tokens.exitCode).toBe(0);
+    expect(JSON.parse(tokens.stdout)).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

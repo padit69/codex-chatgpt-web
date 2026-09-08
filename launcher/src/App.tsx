@@ -1852,6 +1852,8 @@ function ApiSurface({
   };
 
   const enabled = gateway?.enabled === true;
+  // The listener is written into the runtime configuration, which only exists after core setup.
+  const configured = gateway?.configured !== false;
   const portValid = Number.isInteger(Number(port)) && Number(port) > 0 && Number(port) < 65_536;
   const endpoint = gateway ? `http://${gateway.host}:${enabled ? gateway.port : Number(port) || gateway.port}/v1` : "";
 
@@ -1862,7 +1864,7 @@ function ApiSurface({
         <SettingRow body={copy.apiGatewayBody} flushAfter label={copy.apiGatewaySection}>
           <Switch
             checked={enabled}
-            disabled={busy || !loaded || !portValid || (!enabled && tokens.length === 0)}
+            disabled={busy || !loaded || !configured || !portValid || (!enabled && tokens.length === 0)}
             onChange={(checked) => toggleGateway(checked)}
           />
         </SettingRow>
@@ -1884,7 +1886,10 @@ function ApiSurface({
         </div>
       </div>
 
-      {loaded && tokens.length === 0 ? (
+      {loaded && !configured ? (
+        <NoticeRow icon="alert" tone="warning">{copy.apiSetupRequired}</NoticeRow>
+      ) : null}
+      {loaded && configured && tokens.length === 0 ? (
         <NoticeRow icon="alert" tone="warning">{copy.apiTokenRequired}</NoticeRow>
       ) : null}
       <NoticeRow icon="alert" tone="warning">{copy.apiTunnelNotice}</NoticeRow>

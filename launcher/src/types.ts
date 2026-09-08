@@ -73,6 +73,8 @@ export interface ApiGatewayStatus {
   port: number;
   host: string;
   tokens: number;
+  /** False until core setup has written the runtime configuration the listener needs. */
+  configured: boolean;
 }
 
 export interface LogRecord {

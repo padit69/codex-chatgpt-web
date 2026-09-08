@@ -551,19 +551,34 @@ async function gatewayCommand(args: string[]): Promise<void> {
   if (requestedPort !== undefined && action !== "enable") {
     throw new Error("--port applies only to: gateway enable");
   }
-  const config = loadConfigForSetup();
+  // Status is a read-only query, so "core setup has not run yet" is an answer rather than an
+  // error. The launcher calls it whenever its API page opens, which is reachable before setup.
+  const configured = existsSync(getConfigPath());
   if (action === "status") {
-    const gateway = config.gateway ?? { enabled: false, port: DEFAULT_GATEWAY_PORT };
+    const statusConfig = configured ? loadConfigForSetup() : undefined;
+    const gateway = statusConfig?.gateway ?? { enabled: false, port: DEFAULT_GATEWAY_PORT };
+    const host = statusConfig?.host ?? "127.0.0.1";
     const tokens = listApiTokens().length;
     if (json) {
-      stdout.write(`${JSON.stringify({ ...gateway, host: config.host, tokens })}\n`);
+      stdout.write(`${JSON.stringify({ ...gateway, host, tokens, configured })}\n`);
+      return;
+    }
+    if (!configured) {
+      stdout.write("Gateway disabled; core setup has not run yet.\n");
       return;
     }
     stdout.write(gateway.enabled
-      ? `Gateway enabled on http://${config.host}:${gateway.port}/v1 with ${tokens} token(s).\n`
+      ? `Gateway enabled on http://${host}:${gateway.port}/v1 with ${tokens} token(s).\n`
       : `Gateway disabled (would use port ${gateway.port}).\n`);
     return;
   }
+  if (!configured) {
+    throw new Error(
+      "The gateway needs the installed runtime configuration. Complete core setup first"
+        + " (Install models in the launcher, or codex-chatgpt-web setup).",
+    );
+  }
+  const config = loadConfigForSetup();
   let port = config.gateway?.port ?? DEFAULT_GATEWAY_PORT;
   if (requestedPort !== undefined) {
     port = Number(requestedPort);

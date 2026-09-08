@@ -1,6 +1,7 @@
 import type { Language } from "./types";
 
 const en = {
+  apiSetupRequired: "Finish core setup first. The gateway needs the installed runtime configuration before it can start.",
   apiNav: "API gateway",
   apiTitle: "Public API gateway",
   apiSubtitle: "Serve the ChatGPT Web models to your own clients through a second loopback port that requires an API token.",
@@ -223,6 +224,7 @@ const en = {
 } as const;
 
 const zh: Record<keyof typeof en, string> = {
+  apiSetupRequired: "请先完成核心设置。网关需要已安装的运行时配置才能启动。",
   apiNav: "API 网关",
   apiTitle: "公开 API 网关",
   apiSubtitle: "通过需要 API 令牌的第二个本地端口，把 ChatGPT Web 模型提供给你自己的客户端。",
@@ -445,6 +447,7 @@ const zh: Record<keyof typeof en, string> = {
 };
 
 const ja: Record<keyof typeof en, string> = {
+  apiSetupRequired: "先にコア設定を完了してください。ゲートウェイの起動には、インストール済みのランタイム設定が必要です。",
   apiNav: "API ゲートウェイ",
   apiTitle: "公開 API ゲートウェイ",
   apiSubtitle: "API トークンを必要とする 2 つ目のループバックポートを通じて、ChatGPT Web モデルを独自のクライアントに提供します。",
