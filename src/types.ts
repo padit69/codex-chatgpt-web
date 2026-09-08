@@ -36,6 +36,11 @@ export interface CodexParsedRequest {
    * handler from its caller, never parsed from the request body.
    */
   _persistentChat?: boolean;
+  /**
+   * True when the selected route generates a picture. Routing rewrites `modelId` to the shared
+   * backend model, so the distinction has to travel on the request itself.
+   */
+  _imageGeneration?: boolean;
 }
 
 export interface CodexContext {

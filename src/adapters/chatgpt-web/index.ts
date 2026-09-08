@@ -688,6 +688,7 @@ export function createChatGptWebAdapter(
         }),
         abortSignal: browserAbort.signal,
         ...(parsed._persistentChat ? { persistentChat: true as const } : {}),
+        ...(parsed._imageGeneration ? { imageGeneration: true as const } : {}),
         ...(parsed._compactionRequest ? { compaction: true } : {}),
         ...submissionLifecycle,
         ...multipartProgressLifecycle,

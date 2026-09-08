@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { touchApiToken, verifyApiToken } from "./api-tokens";
 import {
   availableChatGptWebModelRoutes,
+  CHATGPT_WEB_IMAGE_MODEL_ROUTE,
   isChatGptWebModelSlug,
   requireChatGptWebModelRoute,
   resolveChatGptWebContextLimits,
@@ -104,7 +105,10 @@ function gatewayModelCatalog(config: AppConfig): Record<string, unknown> {
     browserInteractionMode: config.browserInteractionMode,
     zeroRiskProEnabled: config.zeroRiskProEnabled,
   };
-  const routes = availableChatGptWebModelRoutes(capabilities);
+  // The image route is gateway-only: Codex's picker has no use for an image-only row.
+  const routes = capabilities.browserInteractionMode === "manual"
+    ? availableChatGptWebModelRoutes(capabilities)
+    : [...availableChatGptWebModelRoutes(capabilities), CHATGPT_WEB_IMAGE_MODEL_ROUTE];
   return {
     object: "list",
     data: routes.map(route => {

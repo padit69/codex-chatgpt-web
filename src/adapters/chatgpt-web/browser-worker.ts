@@ -120,6 +120,11 @@ export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
  * the bounded staged-send budget.
  */
 export const CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS = 180_000;
+/**
+ * An image turn streams nothing at all: ChatGPT renders one picture when the tool finishes, so the
+ * ordinary silence budget expires mid-generation and fails a turn that was about to succeed.
+ */
+export const CHATGPT_IMAGE_RESPONSE_DOM_GRACE_MS = 300_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
@@ -1150,6 +1155,8 @@ export interface BrowserTurn {
   requireRetainedConversation?: boolean;
   /** Run in an ordinary ChatGPT conversation instead of the isolated Temporary Chat. */
   persistentChat?: boolean;
+  /** The turn asks ChatGPT for a picture, which streams nothing until the tool finishes. */
+  imageGeneration?: boolean;
   conversationKey?: string;
   onPreparedSelected?: (reused: boolean) => void | Promise<void>;
   abortSignal?: AbortSignal;
@@ -1875,6 +1882,20 @@ class ChatGptBrowserDiagnostics {
                 completionActionCount: element.querySelectorAll(completionActionSelector).length,
                 renderedCompletionActionCount: [...element.querySelectorAll(completionActionSelector)]
                   .filter(rendered).length,
+                // An image-only reply carries no Markdown root, so record what pictures the turn
+                // actually holds. Only shape is recorded: a URL scheme and pixel dimensions.
+                images: [...element.querySelectorAll("img")].slice(0, 6).map(image => ({
+                  chars: (image.currentSrc || image.src || "").length,
+                  https: /^https?:/.test(image.currentSrc || image.src || ""),
+                  naturalW: image.naturalWidth,
+                  naturalH: image.naturalHeight,
+                  layoutW: image.width,
+                  layoutH: image.height,
+                  inButton: image.closest("button") !== null,
+                  rendered: rendered(image),
+                })),
+                canvasCount: element.querySelectorAll("canvas").length,
+                svgCount: element.querySelectorAll("svg").length,
               })),
             },
           };
@@ -4094,14 +4115,50 @@ export class ChatGptBrowserWorker {
         }
         return false;
       })();
+      // An image-only reply renders no `.markdown` root, so the ordinary answer projection stays
+      // empty and the turn can never reach a stable completion. Project the pictures themselves as
+      // one Markdown segment; every later stage then treats them like any other answer content.
+      const answerImages = markdownSegments.length > 0
+        ? []
+        : [...root.querySelectorAll<HTMLImageElement>("img")]
+          .filter(renderedInDom)
+          .filter(candidate => /^https?:|^blob:|^data:/.test(candidate.currentSrc || candidate.src))
+          // Exclude UI chrome: avatars and icons live inside buttons and links.
+          .filter(candidate => candidate.closest("button") === null && candidate.closest("a") === null)
+          .map(candidate => candidate.currentSrc || candidate.src);
+      const uniqueAnswerImages = [...new Set(answerImages)];
+      const imageMarkdown = uniqueAnswerImages
+        .map((source, index) => `![generated image ${index + 1}](${source})`)
+        .join("\n\n");
+      // Completion evidence is normally anchored to the last Markdown root. An image-only reply has
+      // none, so anchor it to the turn's own rendered completion action instead.
+      let completionEvidence = completionAction;
+      if (imageMarkdown && !completionEvidence) {
+        completionEvidence = [...root.querySelectorAll<HTMLElement>(options.completionActionSelector)]
+          .filter(renderedInDom)
+          .at(-1);
+      }
+      if (imageMarkdown) {
+        markdownSegments.push({
+          // A stable key so a redrawn but unchanged picture does not look like new content.
+          key: `image:${uniqueAnswerImages.join("|")}`,
+          tag: "p",
+          html: uniqueAnswerImages.map(source => `<p><img src="${source}"></p>`).join(""),
+          text: imageMarkdown,
+          streamable: false,
+        });
+      }
       return {
         key: observerKey,
         snapshot: {
           responsePresent: true,
-          visibleText: renderedRoots.map(candidate => candidate.innerText.trim()).filter(Boolean).join("\n\n"),
+          visibleText: [
+            ...renderedRoots.map(candidate => candidate.innerText.trim()).filter(Boolean),
+            ...(imageMarkdown ? [imageMarkdown] : []),
+          ].join("\n\n"),
           fullHtml: renderedRoots.map(candidate => candidate.innerHTML).join(""),
           markdownSegments,
-          completionActionVisible: completionAction !== undefined,
+          completionActionVisible: completionEvidence !== undefined,
           stoppedThinkingVisible,
           traceBlocks,
         },
@@ -4733,7 +4790,9 @@ export class ChatGptBrowserWorker {
         deadline,
         turn.abortSignal,
         turn.externalProgress,
-        CHATGPT_RESPONSE_DOM_GRACE_MS,
+        turn.persistentChat && turn.imageGeneration
+          ? CHATGPT_IMAGE_RESPONSE_DOM_GRACE_MS
+          : CHATGPT_RESPONSE_DOM_GRACE_MS,
         completionTracker,
         launcherObservationRecovery
           ? async (...args) => {

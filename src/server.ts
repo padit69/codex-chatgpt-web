@@ -372,6 +372,12 @@ export interface ResponseRequestOptions {
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
   const route = requireChatGptWebModelRoute(parsed.modelId, config);
   parsed.modelId = route.backendModel;
+  if (route.imageGeneration) {
+    parsed._imageGeneration = true;
+    // ChatGPT disables its image tool inside a Temporary Chat, so this route implies an ordinary
+    // conversation. Making it implicit keeps callers from having to know that product detail.
+    parsed._persistentChat = true;
+  }
   // Zero Risk preserves a distinct backend identity. Its immutable Codex effort is only a
   // protocol/catalog value; the manual adapter must never reinterpret it as a ChatGPT selection.
   parsed.options.reasoning = route.interactionMode === "automatic"

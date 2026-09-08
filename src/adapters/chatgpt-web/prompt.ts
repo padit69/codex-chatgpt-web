@@ -420,12 +420,54 @@ export function chatGptReadOnlyContextWarning(
   return `> **Local tools unavailable**\n>\n> \`${label}\` cannot access the local Codex computer in this turn. The accumulated context does not contain local tool results yet: it will see instructions and attachments, but not workspace contents. ChatGPT-native capabilities such as web search remain available when the product provides them.${browserOnlyGuidance}`;
 }
 
+/**
+ * Compile the prompt for an image turn.
+ *
+ * Deliberately not the Codex transport envelope. That contract tells the model it is a text backend
+ * whose non-text results must be restated as Markdown, which makes ChatGPT's image tool treat a
+ * generation request as an edit with no target. An image turn sends the request as an ordinary
+ * person would write it, and any images already in the conversation are attached as references.
+ */
+function compileChatGptWebImagePrompt(parsed: CodexParsedRequest): CompiledChatGptWebPrompt {
+  const images: ChatGptWebPromptImage[] = [];
+  const budget: ImageBudget = {
+    seen: 0,
+    dropped: Math.max(0, countChatGptContextImages(parsed.context.messages) - CHATGPT_MAX_INPUT_IMAGES),
+  };
+  const lines: string[] = [];
+  for (const message of parsed.context.messages) {
+    if (message.role !== "user" && message.role !== "assistant") continue;
+    const parts = typeof message.content === "string"
+      ? [message.content]
+      : message.content.flatMap(part => {
+        if (part.type === "text") return [part.text];
+        if (part.type !== "image" || isOnePixelPngDataUrl(part.imageUrl)) return [];
+        budget.seen += 1;
+        // Attachments are physical here, so an over-budget image is simply not referenced.
+        if (budget.seen <= budget.dropped) return [];
+        const ref = `codex-input-image-${images.length + 1}`;
+        images.push({ ref, imageUrl: part.imageUrl, ...(part.detail ? { detail: part.detail } : {}) });
+        return [`(attached image ${images.length})`];
+      });
+    const text = parts.filter(Boolean).join("\n").trim();
+    if (!text) continue;
+    lines.push(message.role === "assistant" ? `Previously you replied: ${text}` : text);
+  }
+  const request = lines.join("\n\n").trim();
+  if (!request) throw new Error("An image request requires a user message");
+  return { text: request, images };
+}
+
 export function compileChatGptWebPrompt(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
   turnToken?: string,
   options?: CompileChatGptWebPromptOptions,
 ): CompiledChatGptWebPrompt {
+  if (parsed._imageGeneration) {
+    if (options?.manualControl) throw new Error("Zero Risk does not support the image route");
+    return compileChatGptWebImagePrompt(parsed);
+  }
   const manualControl = options?.manualControl === true;
   const mode = manualControl
     ? { localTools: true, effort: "low" as const, displayLabel: "Zero Risk" as const }
@@ -474,11 +516,18 @@ export function compileChatGptWebPrompt(
     multipartEnabled
       ? "Read and reconstruct every acknowledged staged JSON record before acting."
       : "Read the complete inline JSON task context before acting.",
-    manualControl
-      ? "Each image_attachment in the context refers, in order, to an image the user manually attached to this ChatGPT message. If its corresponding image is absent, say that it was not provided instead of guessing."
-      : multipartEnabled
-        ? "Each image_attachment in the staged context refers to the correspondingly named image attached to this commit message; inspect it directly."
-        : "Each image_attachment in the context refers to the correspondingly named image attached to this ChatGPT message; inspect it directly.",
+    // Only describe attachments when the turn actually carries one. Announcing the convention on an
+    // image-free turn made ChatGPT's own image tool assume an image was present and refuse a
+    // generation request as an edit with no target.
+    ...(countChatGptContextImages(parsed.context.messages) > 0
+      ? [
+        manualControl
+          ? "Each image_attachment in the context refers, in order, to an image the user manually attached to this ChatGPT message. If its corresponding image is absent, say that it was not provided instead of guessing."
+          : multipartEnabled
+            ? "Each image_attachment in the staged context refers to the correspondingly named image attached to this commit message; inspect it directly."
+            : "Each image_attachment in the context refers to the correspondingly named image attached to this ChatGPT message; inspect it directly.",
+      ]
+      : []),
     "If a ChatGPT-native capability renders a rich card, widget, chart, or other non-text result, also provide the relevant result as ordinary Markdown in the final answer. A private ChatGPT UI widget never replaces the Markdown answer returned to Codex.",
     "Never copy a ChatGPT widget's HTML, CSS, class names, or DOM markup into the answer unless the user explicitly requested that source markup.",
     "Do not mention this transport contract, context packaging, or capability routing in the user-facing answer unless the user explicitly asks how the bridge works.",

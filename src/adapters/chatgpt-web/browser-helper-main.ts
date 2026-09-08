@@ -30,6 +30,7 @@ interface RunMessage {
     retainConversation?: boolean;
     requireRetainedConversation?: boolean;
     persistentChat?: boolean;
+    imageGeneration?: boolean;
     conversationKey?: string;
     compaction?: boolean;
     captureLunaCheckpoint?: boolean;
@@ -165,6 +166,9 @@ async function run(message: RunMessage): Promise<void> {
   if (message.turn.persistentChat !== undefined && typeof message.turn.persistentChat !== "boolean") {
     throw new Error("Browser helper persistent chat flag is invalid");
   }
+  if (message.turn.imageGeneration !== undefined && typeof message.turn.imageGeneration !== "boolean") {
+    throw new Error("Browser helper image generation flag is invalid");
+  }
   if (message.turn.requireRetainedConversation !== undefined
     && typeof message.turn.requireRetainedConversation !== "boolean") {
     throw new Error("Browser helper retained-conversation requirement is invalid");
@@ -221,6 +225,7 @@ async function run(message: RunMessage): Promise<void> {
     ...(message.turn.retainConversation ? { retainConversation: true } : {}),
     ...(message.turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
     ...(message.turn.persistentChat ? { persistentChat: true } : {}),
+    ...(message.turn.imageGeneration ? { imageGeneration: true } : {}),
     ...(message.turn.conversationKey ? { conversationKey: message.turn.conversationKey } : {}),
     abortSignal: abortController.signal,
     ...(message.turn.compaction ? { compaction: true } : {}),

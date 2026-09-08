@@ -218,6 +218,12 @@ export function resolveChatGptWebMessageTokenBudget(
 
 interface ChatGptWebModelRouteBase {
   slug: string;
+  /**
+   * The route produces a picture rather than a text answer. Such a turn skips the Codex transport
+   * envelope entirely: ChatGPT returns an image, and a contract that demands a Markdown answer
+   * makes its image tool refuse the request.
+   */
+  imageGeneration?: true;
   displayName: string;
   description: string;
   codexEffort: ChatGptWebCodexEffort;
@@ -267,6 +273,18 @@ export const CHATGPT_WEB_ZERO_RISK_PRO_MODEL_ROUTE: ChatGptWebZeroRiskModelRoute
   codexEffort: "low",
   adapterEffort: "low",
   requiresPro: true,
+};
+
+export const CHATGPT_WEB_IMAGE_MODEL_ROUTE: ChatGptWebAutomaticModelRoute = {
+  slug: "chatgpt-web/image",
+  displayName: "ChatGPT Web — Image",
+  description: "Generate a picture with ChatGPT's own image tool and return it as a downloadable file.",
+  interactionMode: "automatic",
+  backendModel: CHATGPT_WEB_BACKEND_MODEL,
+  codexEffort: "low",
+  adapterEffort: "low",
+  requiresPro: false,
+  imageGeneration: true,
 };
 
 export const CHATGPT_WEB_LUNA_MODEL_ROUTE: ChatGptWebAutomaticModelRoute = {
@@ -361,6 +379,7 @@ const routesBySlug = new Map(
   [
     CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE,
     CHATGPT_WEB_ZERO_RISK_PRO_MODEL_ROUTE,
+    CHATGPT_WEB_IMAGE_MODEL_ROUTE,
     ...CHATGPT_WEB_LUNA_MODEL_ROUTES,
     ...CHATGPT_WEB_MODEL_ROUTES,
   ]
@@ -383,6 +402,8 @@ export function availableChatGptWebModelRoutes(
       : [CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE];
   }
   if (!capabilities.solAvailable) return CHATGPT_WEB_LUNA_MODEL_ROUTES;
+  // The image route is deliberately absent here: this list installs Codex's model picker, and an
+  // image-only row has no use inside a coding task. The API gateway advertises it separately.
   return capabilities.proAvailable
     ? CHATGPT_WEB_MODEL_ROUTES
     : CHATGPT_WEB_MODEL_ROUTES.filter(route => !route.requiresPro);
