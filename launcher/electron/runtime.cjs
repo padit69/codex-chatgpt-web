@@ -8,6 +8,7 @@ const {
   connectorNameForDevSetup,
   connectorNameForSetup,
   CURRENT_CONNECTOR_NAME,
+  DEV_CONNECTOR_NAME,
   isLegacyConnectorName,
   requireCurrentRuntimeConnectorName,
   validateConnectorName,
@@ -72,13 +73,18 @@ function usableExecutable(candidate, platform = process.platform) {
   }
 }
 
-function captureRegularFile(filePath) {
+function captureRegularFile(filePath, { followSymlink = false } = {}) {
   let stat;
   try {
     stat = fs.lstatSync(filePath);
   } catch (error) {
     if (error?.code === "ENOENT") return { path: filePath, exists: false };
     throw error;
+  }
+  let symlink;
+  if (followSymlink && stat.isSymbolicLink()) {
+    symlink = { link: fs.readlinkSync(filePath), target: fs.realpathSync(filePath) };
+    stat = fs.lstatSync(symlink.target);
   }
   if (!stat.isFile()) {
     throw new Error(`Setup checkpoint path is not a regular file: ${filePath}`);
@@ -89,9 +95,20 @@ function captureRegularFile(filePath) {
   return {
     path: filePath,
     exists: true,
-    data: fs.readFileSync(filePath),
+    data: fs.readFileSync(symlink?.target ?? filePath),
     mode: stat.mode & 0o777,
+    ...(symlink ? { symlink } : {}),
   };
+}
+
+function checkpointWritePath(snapshot) {
+  if (!snapshot.symlink) return snapshot.path;
+  if (!fs.lstatSync(snapshot.path).isSymbolicLink()
+    || fs.readlinkSync(snapshot.path) !== snapshot.symlink.link
+    || fs.realpathSync(snapshot.path) !== snapshot.symlink.target) {
+    throw new Error(`Codex config symlink changed during setup: ${snapshot.path}`);
+  }
+  return snapshot.symlink.target;
 }
 
 function restoreRegularFile(snapshot, platform = process.platform) {
@@ -99,14 +116,19 @@ function restoreRegularFile(snapshot, platform = process.platform) {
     fs.rmSync(snapshot.path, { force: true });
     return;
   }
-  writePrivateFileAtomic(snapshot.path, snapshot.data);
-  if (platform !== "win32") fs.chmodSync(snapshot.path, snapshot.mode);
+  const writePath = checkpointWritePath(snapshot);
+  writePrivateFileAtomic(writePath, snapshot.data, snapshot.symlink
+    ? { mode: snapshot.mode, protectDirectory: false }
+    : undefined);
+  if (platform !== "win32") fs.chmodSync(writePath, snapshot.mode);
 }
 
 function regularFileChanged(snapshot, platform = process.platform) {
+  let filePath;
+  try { filePath = checkpointWritePath(snapshot); } catch { return true; }
   let stat;
   try {
-    stat = fs.lstatSync(snapshot.path);
+    stat = fs.lstatSync(filePath);
   } catch (error) {
     if (error?.code === "ENOENT") return snapshot.exists;
     throw error;
@@ -114,7 +136,7 @@ function regularFileChanged(snapshot, platform = process.platform) {
   if (!snapshot.exists || !stat.isFile()) return true;
   if (platform !== "win32" && (stat.mode & 0o777) !== snapshot.mode) return true;
   if (stat.size > MAX_CHECKPOINT_FILE_BYTES) return true;
-  return !fs.readFileSync(snapshot.path).equals(snapshot.data);
+  return !fs.readFileSync(filePath).equals(snapshot.data);
 }
 
 function parseBridgeRouteResult(stdout, { expectedActive, requireInstalled = false } = {}) {
@@ -566,7 +588,9 @@ class RuntimeHost {
         paths.add(path.join(tunnel.profileDir, `${tunnel.profileName}.yaml`));
       }
     }
-    return [...paths].map(captureRegularFile);
+    return [...paths].map(filePath => captureRegularFile(filePath, {
+      followSymlink: filePath === path.join(this.codexHome, "config.toml"),
+    }));
   }
 
   setupCheckpointChanged(checkpoint) {
@@ -982,11 +1006,7 @@ class RuntimeHost {
   }
 
   setupConnectorName() {
-    const current = this.runtimeConfigSnapshot();
-    if (typeof current.config?.automaticAppName === "string" && current.config.automaticAppName.trim()) {
-      return validateConnectorName(current.config.automaticAppName);
-    }
-    return this.browserConnectorName();
+    return this.launcherProfile === "development" ? DEV_CONNECTOR_NAME : CURRENT_CONNECTOR_NAME;
   }
 
   cancelActiveTurns() {
@@ -1075,7 +1095,6 @@ class RuntimeHost {
       "--acknowledge-unofficial",
       "--restart-service",
     ];
-    if (mode === "full") args.push("--app-name", this.setupConnectorName());
     const result = await this.runSetup("core-setup", args, {
       message: "Installing ChatGPT Web models into Codex",
       successMessage: "Codex integration installed",
@@ -1106,7 +1125,6 @@ class RuntimeHost {
       }),
       "--acknowledge-unofficial",
     ];
-    if (mode === "full") args.push("--app-name", this.setupConnectorName());
     const result = await this.runDevSetup("dev-profile-setup", args, {
       message: "Configuring the isolated DEV harness",
       successMessage: "Isolated DEV harness configured",
@@ -1134,7 +1152,6 @@ class RuntimeHost {
         contextFlag,
       ];
       if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
-      if (mode === "full") args.push("--app-name", this.setupConnectorName());
       const result = await this.runDevSetup("bigger-context", args, {
         message: enabled ? "Enabling Bigger Context" : "Disabling Bigger Context",
         successMessage: enabled ? "Bigger Context enabled" : "Standard context restored",
@@ -1154,7 +1171,6 @@ class RuntimeHost {
       contextFlag,
     ];
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
-    if (mode === "full") args.push("--app-name", this.setupConnectorName());
     const result = await this.runSetup("bigger-context", args, {
       message: enabled ? "Enabling Bigger Context" : "Disabling Bigger Context",
       successMessage: enabled ? "Bigger Context enabled; restart Codex" : "Standard context restored; restart Codex",
@@ -1178,8 +1194,6 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       ...this.browserInteractionArgs({ mode: "manual" }),
-      "--app-name",
-      this.setupConnectorName(),
       "--acknowledge-unofficial",
       "--standard-context",
       profileFlag,
@@ -1241,9 +1255,6 @@ class RuntimeHost {
       "--acknowledge-unofficial",
       "--restart-service",
     ];
-    if (existing.mode === "full") {
-      args.push("--app-name", this.setupConnectorName());
-    }
     const result = await this.runSetup("runtime-upgrade", args, {
       message: tunnelProfileMigrationRequired
         ? `Separating ${interactionMode === "manual" ? "Zero Risk" : "Automatic"} MCP credentials`
@@ -1280,8 +1291,6 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       ...this.browserInteractionArgs({ mode: targetMode }),
-      "--app-name",
-      this.setupConnectorName(),
       "--replace-codex-route",
     ];
     if (reuseSavedCredentials) {
@@ -1334,8 +1343,6 @@ class RuntimeHost {
       "--browser-host-descriptor",
       this.browserDescriptorPath,
       ...this.browserInteractionArgs({ mode: targetMode }),
-      "--app-name",
-      this.setupConnectorName(),
       "--acknowledge-unofficial",
     ];
     if (reuseSavedCredentials) {
@@ -1384,7 +1391,6 @@ class RuntimeHost {
         : "--standard-context",
     ];
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
-    if (current.mode === "full") args.push("--app-name", this.setupConnectorName());
     const options = {
       message: mode === "manual"
         ? "Enabling Zero Risk"

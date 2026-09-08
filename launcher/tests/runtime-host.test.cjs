@@ -74,15 +74,14 @@ test("core setup preserves an existing full-harness installation", async () => {
     "--replace-codex-route",
     "--acknowledge-unofficial",
     "--restart-service",
-    "--app-name",
-    "Codex Native2",
   ]);
 });
 
 test("core setup replaces the known legacy connector identity with the direct-turn identity", async () => {
   const fixture = hostFor({ mode: "full", appName: "Codex Native" });
   await fixture.host.setupCore();
-  assert.deepEqual(fixture.invocation().args.slice(-2), ["--app-name", "Codex Native2"]);
+  assert.equal(fixture.invocation().args.includes("--app-name"), false);
+  assert.equal(fixture.host.setupConnectorName(), CURRENT_CONNECTOR_NAME);
 });
 
 test("core setup starts in browser-only mode when no installation exists", async () => {
@@ -147,10 +146,8 @@ test("switching back from Zero Risk preserves the saved automatic connector iden
   }, "manual");
   await fixture.host.setBrowserInteractionMode("automatic");
   const args = fixture.invocation().args;
-  assert.deepEqual(args.slice(args.indexOf("--app-name"), args.indexOf("--app-name") + 2), [
-    "--app-name",
-    "Codex Native2",
-  ]);
+  assert.equal(args.includes("--app-name"), false);
+  assert.equal(fixture.host.setupConnectorName(), CURRENT_CONNECTOR_NAME);
   assert.equal(args.includes("Codex Zero Risk"), false);
 });
 
@@ -191,8 +188,6 @@ test("Bigger Context uses the setup transaction and refreshes the production Cod
       "--acknowledge-unofficial",
       "--restart-service",
       "--bigger-context",
-      "--app-name",
-      "Codex Native2",
     ],
   });
 });
@@ -235,8 +230,6 @@ test("Zero Risk Pro transaction installs or removes only its explicit model prof
       "--browser-host-descriptor",
       "/runtime/launcher-browser.json",
       "--zero-risk-browser-interaction",
-      "--app-name",
-      "Codex Native2",
       "--acknowledge-unofficial",
       "--standard-context",
       "--zero-risk-pro",
@@ -305,8 +298,6 @@ test("DEV MCP setup reuses only DEV-home credentials and targets its distinct co
         "--browser-host-descriptor",
         "/dev/runtime/launcher-browser.json",
         "--automatic-browser-interaction",
-        "--app-name",
-        "Codex Native2 DEV",
         "--acknowledge-unofficial",
       ],
     });
@@ -394,8 +385,6 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
-    "--app-name",
-    "Codex Native2",
   ]);
   assert.deepEqual(result, {
     updated: true,
@@ -427,8 +416,6 @@ test("launcher migrates the legacy connector identity even when the release vers
     "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
-    "--app-name",
-    "Codex Native2",
   ]);
   assert.equal(result.updated, true);
   assert.equal(result.connectorMigrated, true);
@@ -504,8 +491,6 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
       "--browser-host-descriptor",
       "/runtime/launcher-browser.json",
       "--automatic-browser-interaction",
-      "--app-name",
-      "Codex Native2",
       "--replace-codex-route",
       "--acknowledge-unofficial",
       "--restart-service",
@@ -517,7 +502,7 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
   }
 });
 
-test("new MCP setup uses the explicit default connector name", async () => {
+test("new MCP setup uses the fixed connector without a CLI name override", async () => {
   const fixture = hostFor(null);
   await fixture.host.setupMcp({
     replace: true,
@@ -525,15 +510,15 @@ test("new MCP setup uses the explicit default connector name", async () => {
     runtimeKey: "new-private-runtime-key",
   });
 
-  assert.deepEqual(fixture.invocation().args.slice(0, 7), [
+  assert.deepEqual(fixture.invocation().args.slice(0, 5), [
     "setup",
     "--full",
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
     "--automatic-browser-interaction",
-    "--app-name",
-    "Codex Native2",
   ]);
+  assert.equal(fixture.invocation().args.includes("--app-name"), false);
+  assert.equal(fixture.host.setupConnectorName(), CURRENT_CONNECTOR_NAME);
 });
 
 test("MCP credential replacement remains explicit and requires a complete new pair", async () => {
@@ -1026,6 +1011,8 @@ test("failed launcher update restores every mutable setup file before restarting
   const profileDir = path.join(coreHome, "tunnel", "profiles");
   const profilePath = path.join(profileDir, "custom.yaml");
   const codexConfigPath = path.join(codexHome, "config.toml");
+  const sharedDirectory = path.join(root, "shared");
+  const sharedConfigPath = path.join(sharedDirectory, "config.toml");
   const codexModelsCachePath = path.join(codexHome, "models_cache.json");
   const oldConfig = {
     mode: "full",
@@ -1045,7 +1032,13 @@ test("failed launcher update restores every mutable setup file before restarting
   fs.writeFileSync(recoveryJournalPath, "old recovery journal\n", { mode: 0o600 });
   fs.writeFileSync(keyPath, "old key\n", { mode: 0o600 });
   fs.writeFileSync(profilePath, "old profile\n", { mode: 0o600 });
-  fs.writeFileSync(codexConfigPath, "old codex config\n", { mode: 0o600 });
+  fs.mkdirSync(sharedDirectory, { mode: 0o750 });
+  fs.writeFileSync(sharedConfigPath, "old codex config\n", { mode: 0o640 });
+  fs.symlinkSync(sharedConfigPath, codexConfigPath);
+  const linkTarget = fs.readlinkSync(codexConfigPath);
+  const linkInode = fs.lstatSync(codexConfigPath).ino;
+  const directoryMode = fs.statSync(sharedDirectory).mode & 0o777;
+  const fileMode = fs.statSync(sharedConfigPath).mode & 0o777;
   fs.writeFileSync(codexModelsCachePath, "old codex models cache\n", { mode: 0o600 });
 
   let startAttempts = 0;
@@ -1096,6 +1089,11 @@ test("failed launcher update restores every mutable setup file before restarting
     assert.equal(fs.readFileSync(keyPath, "utf8"), "old key\n");
     assert.equal(fs.readFileSync(profilePath, "utf8"), "old profile\n");
     assert.equal(fs.readFileSync(codexConfigPath, "utf8"), "old codex config\n");
+    assert.equal(fs.lstatSync(codexConfigPath).isSymbolicLink(), true);
+    assert.equal(fs.lstatSync(codexConfigPath).ino, linkInode);
+    assert.equal(fs.readlinkSync(codexConfigPath), linkTarget);
+    assert.equal(fs.statSync(sharedDirectory).mode & 0o777, directoryMode);
+    assert.equal(fs.statSync(sharedConfigPath).mode & 0o777, fileMode);
     assert.equal(fs.readFileSync(codexModelsCachePath, "utf8"), "old codex models cache\n");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

@@ -36,39 +36,6 @@ export function legacyChatGptConnectorMigrationMessage(legacyName: string): stri
     + ` do not rename or refresh ${JSON.stringify(legacyName)}.`;
 }
 
-export function resolveSetupConnectorName(existingName?: string, requestedName?: string): string {
-  if (requestedName !== undefined) {
-    const requested = requestedName.trim();
-    if (!requested || requested.length > 80) throw new Error("Connector name is invalid");
-    if (requested === ZERO_RISK_CHATGPT_CONNECTOR_NAME) {
-      throw new Error(
-        `Automatic connector name ${JSON.stringify(requested)} is reserved for Zero Risk; choose a different name`,
-      );
-    }
-    if (isLegacyChatGptConnectorName(requested)) {
-      throw new Error(legacyChatGptConnectorMigrationMessage(requested));
-    }
-    return requested;
-  }
-  const existing = existingName?.trim();
-  if (!existing
-    || existing === ZERO_RISK_CHATGPT_CONNECTOR_NAME
-    || isLegacyChatGptConnectorName(existing)) return CHATGPT_CONNECTOR_NAME;
-  return existing;
-}
-
-export function resolveDevSetupConnectorName(existingName?: string, requestedName?: string): string {
-  if (requestedName !== undefined) return resolveSetupConnectorName(existingName, requestedName);
-  const existing = existingName?.trim();
-  if (!existing
-    || existing === CHATGPT_CONNECTOR_NAME
-    || existing === ZERO_RISK_CHATGPT_CONNECTOR_NAME
-    || isLegacyChatGptConnectorName(existing)) {
-    return DEV_CHATGPT_CONNECTOR_NAME;
-  }
-  return resolveSetupConnectorName(existing);
-}
-
 export interface InteractionConnectorIdentities {
   appName: string;
   automaticAppName: string;
@@ -76,13 +43,10 @@ export interface InteractionConnectorIdentities {
 }
 
 export function resolveInteractionConnectorIdentities(
-  existing: Pick<AppConfig, "appName" | "automaticAppName" | "browserInteractionMode"> | undefined,
   interactionMode: BrowserInteractionMode,
-  requestedAutomaticName?: string,
+  profile: "production" | "development" = "production",
 ): InteractionConnectorIdentities {
-  const previousAutomaticName = existing?.automaticAppName
-    || (existing?.browserInteractionMode !== "manual" ? existing?.appName : undefined);
-  const automaticAppName = resolveSetupConnectorName(previousAutomaticName, requestedAutomaticName);
+  const automaticAppName = profile === "development" ? DEV_CHATGPT_CONNECTOR_NAME : CHATGPT_CONNECTOR_NAME;
   return {
     appName: interactionMode === "manual" ? ZERO_RISK_CHATGPT_CONNECTOR_NAME : automaticAppName,
     automaticAppName,
@@ -200,12 +164,18 @@ function renameAtomicFile(source: string, destination: string): void {
   }
 }
 
-export function atomicWriteFile(path: string, data: string | Uint8Array): void {
+export function atomicWriteFile(
+  path: string,
+  data: string | Uint8Array,
+  { mode = 0o600, protectDirectory = true }: { mode?: number; protectDirectory?: boolean } = {},
+): void {
   const directory = dirname(path);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  try { chmodSync(directory, 0o700); } catch { /* Windows ACLs are managed by the installer. */ }
+  if (protectDirectory) {
+    try { chmodSync(directory, 0o700); } catch { /* Windows ACLs are managed by the installer. */ }
+  }
   const temp = `${path}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  const fd = openSync(temp, "wx", 0o600);
+  const fd = openSync(temp, "wx", mode);
   try {
     writeFileSync(fd, data);
     closeSync(fd);
@@ -215,7 +185,7 @@ export function atomicWriteFile(path: string, data: string | Uint8Array): void {
     rmSync(temp, { force: true });
     throw error;
   }
-  try { chmodSync(path, 0o600); } catch { /* Windows ACLs are managed by the installer. */ }
+  try { chmodSync(path, mode); } catch { /* Windows ACLs are managed by the installer. */ }
 }
 
 export function stripUtf8Bom(text: string): string {
