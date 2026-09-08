@@ -814,7 +814,10 @@ export function createChatGptWebAdapter(
           });
           return;
         }
-        const turnCapabilities = parsed._compactionRequest && !manualRequest
+        // A compaction turn summarizes rather than acts. An API gateway caller is not Codex: it
+        // owns no sandbox, approval UI, or workspace, so it must never be handed the local tool
+        // capability even while the daemon runs the Full harness for Codex itself.
+        const turnCapabilities = (parsed._compactionRequest || parsed._externalApiCaller) && !manualRequest
           ? { ...configuredCapabilities, localToolsEnabled: false }
           : configuredCapabilities;
         const mode = manualRequest

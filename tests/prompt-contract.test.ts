@@ -202,7 +202,7 @@ test("an API gateway caller receives no launcher-only operator notice", () => {
   // Codex still sees it: the notice tells the user to open a launcher page they actually have.
   expect(chatGptReadOnlyContextWarning(request("medium"), capabilities)).toBeDefined();
   expect(chatGptReadOnlyContextWarning(
-    { ...request("medium"), _suppressOperatorNotices: true },
+    { ...request("medium"), _externalApiCaller: true },
     capabilities,
   )).toBeUndefined();
 });

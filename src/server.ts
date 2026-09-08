@@ -361,10 +361,10 @@ export interface ResponseRequestOptions {
   /** Bind the physical HTTP stream to the exact native Codex turn that owns it. */
   onTurnIdentity?: (identity: NativeCodexTurnIdentity) => void;
   /**
-   * Drop bridge-authored operator notices from the answer. The API gateway sets this: its callers
-   * have no Codex UI, so a notice telling them to open the launcher is unactionable noise.
+   * Mark the turn as coming from the API gateway. Such a turn runs read-only regardless of the
+   * daemon's mode and omits operator notices that only make sense inside Codex.
    */
-  suppressOperatorNotices?: boolean;
+  externalApiCaller?: boolean;
 }
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
@@ -517,7 +517,7 @@ export async function responseRequest(
   }
 
   // Authority comes from the caller of this handler, never from the parsed request body.
-  if (options.suppressOperatorNotices) parsed._suppressOperatorNotices = true;
+  if (options.externalApiCaller) parsed._externalApiCaller = true;
   const compaction = parsed._compactionRequest === true;
   const rememberCompletedResponse = (response: Record<string, unknown>): void => {
     if (!compaction) {
@@ -1058,7 +1058,7 @@ export function startServer(
             // Gateway callers have no Codex thread to replay, so continuation state would only
             // grow without ever being read back through `previous_response_id`.
             rememberState: false,
-            suppressOperatorNotices: true,
+            externalApiCaller: true,
           },
         ),
         req.signal,

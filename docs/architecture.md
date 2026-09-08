@@ -178,6 +178,10 @@ the launcher. Codex keeps using the original port unchanged.
   per request and marks the final user message as that turn's instruction. Each call is therefore
   an independent task with its own Temporary Chat; callers resend the full conversation in `input`,
   and `previous_response_id` is refused rather than silently running with partial context.
+- A gateway turn always runs read-only, even while the daemon runs the Full harness for Codex.
+  An API caller owns no sandbox, approval UI, or workspace, so it is never handed the local tool
+  capability; Codex keeps its own Full-mode tools on the original port. Zero Risk is refused
+  outright, because every Zero Risk turn requires a person to paste the prompt in the launcher.
 - The listener still binds `127.0.0.1` only. Publishing it is the operator's own tunnel or reverse
   proxy, and every request continues to consume the same five-tab browser budget.
 

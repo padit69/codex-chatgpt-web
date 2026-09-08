@@ -94,6 +94,12 @@ Full mode, reach the local Codex tools any turn exposes. Treat a leaked token as
 compromise and revoke it from the launcher. Tokens are stored only as SHA-256 verifiers, so a
 stolen store cannot be replayed, but neither can a lost token be recovered.
 
+A gateway turn never receives local tools. Enabling the Full harness gives Codex shell, filesystem,
+and MCP access on its own port, but a turn marked as an API caller runs read-only regardless of the
+daemon's mode, so exposing the gateway cannot hand an internet-reachable client the local tool
+capability. That marking is applied by the Responses handler from its caller and is never parsed
+from the request body.
+
 The gateway does not widen the model surface: it serves only routed `chatgpt-web/` ids, strips the
 caller's credential before the request reaches the Responses handlers, and keeps no continuation
 state. It shares the five-tab browser budget with Codex, so exposing it does not raise the parallel

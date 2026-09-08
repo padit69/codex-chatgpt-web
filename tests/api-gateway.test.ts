@@ -242,6 +242,24 @@ describe("API gateway routing", () => {
     expect(input[0]!.internal_chat_message_metadata_passthrough).toEqual({ turn_id: metadata.turn_id });
   });
 
+  test("refuses to serve while the launcher is in Zero Risk mode", async () => {
+    const base = start(recordingHandler, {
+      browserInteractionMode: "manual",
+      zeroRiskProEnabled: false,
+    });
+    const response = await fetch(`${base}/v1/responses`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "chatgpt-web/zero-risk", input: "hi" }),
+    });
+
+    // Every Zero Risk turn needs a person to paste the prompt, so an API caller can never finish
+    // one. Fail with that explanation instead of deeper inside the adapter.
+    expect(response.status).toBe(503);
+    expect(await response.text()).toContain("Zero Risk");
+    expect(observed).toEqual([]);
+  });
+
   test("returns 404 for an unknown authenticated path", async () => {
     const base = start();
     const response = await fetch(`${base}/v1/chat/completions`, {

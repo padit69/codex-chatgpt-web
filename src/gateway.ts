@@ -241,6 +241,18 @@ export function startApiGateway(
       const auth = authorize(req);
       if (!auth.ok) return auth.response;
 
+      if (config.browserInteractionMode === "manual") {
+        // Zero Risk deliberately requires a person to paste and send each prompt in the launcher.
+        // There is no API-shaped version of that contract, so say so instead of failing deeper in.
+        return withCors(formatErrorResponse(
+          503,
+          "invalid_request_error",
+          "The gateway cannot serve requests while the launcher is in Zero Risk mode, because every "
+            + "Zero Risk turn requires a person to paste and send the prompt in the launcher. "
+            + "Switch ChatGPT interaction to With Automation to use the gateway.",
+        ));
+      }
+
       if (req.method === "GET" && url.pathname === "/v1/models") {
         return withCors(Response.json(gatewayModelCatalog(config)));
       }

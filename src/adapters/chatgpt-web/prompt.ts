@@ -402,7 +402,7 @@ export function chatGptReadOnlyContextWarning(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
 ): string | undefined {
-  if (parsed._suppressOperatorNotices) return undefined;
+  if (parsed._externalApiCaller) return undefined;
   if (isChatGptWebZeroRiskBackendModel(parsed.modelId)) return undefined;
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
   if (mode.localTools) return undefined;

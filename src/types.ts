@@ -21,14 +21,14 @@ export interface CodexParsedRequest {
    */
   _opaqueMultiAgentV2Payload?: boolean;
   /**
-   * True when the caller is not the Codex app, so bridge-authored operator notices must not be
-   * mixed into the answer. The advice they carry ("open MCP in the launcher") is actionable only
-   * inside Codex; an API client just receives it as an extra assistant message.
+   * True when the turn came from the API gateway rather than the Codex app. Such a caller has no
+   * Codex UI, no task lifecycle, and no sandbox of its own, so the turn runs read-only and drops
+   * bridge-authored operator notices that only make sense inside Codex.
    *
-   * Set by the Responses handler from its caller, never from the request body: a remote client
-   * must not be able to silence a notice Codex itself is meant to see.
+   * Set by the Responses handler from its caller, never parsed from the request body: a remote
+   * client must not be able to claim or disclaim this itself.
    */
-  _suppressOperatorNotices?: boolean;
+  _externalApiCaller?: boolean;
 }
 
 export interface CodexContext {
