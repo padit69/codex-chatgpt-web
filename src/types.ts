@@ -20,6 +20,15 @@ export interface CodexParsedRequest {
    * before constructing the browser adapter.
    */
   _opaqueMultiAgentV2Payload?: boolean;
+  /**
+   * True when the caller is not the Codex app, so bridge-authored operator notices must not be
+   * mixed into the answer. The advice they carry ("open MCP in the launcher") is actionable only
+   * inside Codex; an API client just receives it as an extra assistant message.
+   *
+   * Set by the Responses handler from its caller, never from the request body: a remote client
+   * must not be able to silence a notice Codex itself is meant to see.
+   */
+  _suppressOperatorNotices?: boolean;
 }
 
 export interface CodexContext {

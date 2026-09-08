@@ -197,6 +197,16 @@ test("browser-only Medium directs users to the full harness", () => {
   })).toBeUndefined();
 });
 
+test("an API gateway caller receives no launcher-only operator notice", () => {
+  const capabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
+  // Codex still sees it: the notice tells the user to open a launcher page they actually have.
+  expect(chatGptReadOnlyContextWarning(request("medium"), capabilities)).toBeDefined();
+  expect(chatGptReadOnlyContextWarning(
+    { ...request("medium"), _suppressOperatorNotices: true },
+    capabilities,
+  )).toBeUndefined();
+});
+
 test("compaction prompts are isolated summarization turns without local or native tool instructions", () => {
   const compact = request("high");
   compact._compactionRequest = true;
