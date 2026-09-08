@@ -53,6 +53,7 @@ import {
   CHATGPT_EFFORT_ITEM_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
+  CHATGPT_PERSISTENT_CHAT_URL,
   CHATGPT_TEMPORARY_CHAT_URL,
   CHATGPT_USER_TURN_SELECTOR,
   activateChatGptEffortMenu,
@@ -1147,6 +1148,8 @@ export interface BrowserTurn {
   nativeConnector?: boolean;
   retainConversation?: boolean;
   requireRetainedConversation?: boolean;
+  /** Run in an ordinary ChatGPT conversation instead of the isolated Temporary Chat. */
+  persistentChat?: boolean;
   conversationKey?: string;
   onPreparedSelected?: (reused: boolean) => void | Promise<void>;
   abortSignal?: AbortSignal;
@@ -2478,13 +2481,15 @@ export class ChatGptBrowserWorker {
   private async prepareTemporaryChatSurface(
     page: Page,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    persistentChat = false,
   ): Promise<Locator> {
+    const target = persistentChat ? CHATGPT_PERSISTENT_CHAT_URL : CHATGPT_TEMPORARY_CHAT_URL;
     // Launcher verification refreshes its owned page before attaching Playwright so a newly added
     // connector is present in the catalog. Navigating again here destroys that freshly hydrated
     // document and made the first verification race a second SPA bootstrap. A leased turn starts on
     // about:blank and therefore still performs exactly one navigation through this same method.
-    if (page.url() !== CHATGPT_TEMPORARY_CHAT_URL) {
-      await page.goto(CHATGPT_TEMPORARY_CHAT_URL, {
+    if (page.url() !== target) {
+      await page.goto(target, {
         waitUntil: "domcontentloaded",
         timeout: 60_000,
       });
@@ -2502,7 +2507,9 @@ export class ChatGptBrowserWorker {
     await captureDiagnostic?.("composer-ready");
     await throwIfChatGptSessionFailureAlert(page);
     await assertAuthenticatedChatGptPage(page);
-    await assertTemporaryChatPage(page);
+    // The Temporary Chat assertion is the isolation guarantee for an ordinary turn. A caller that
+    // deliberately opted out is answered in a normal conversation, so only authentication applies.
+    if (!persistentChat) await assertTemporaryChatPage(page);
     await captureDiagnostic?.("session-verified");
     return composer;
   }
@@ -4511,6 +4518,7 @@ export class ChatGptBrowserWorker {
           () => this.prepareTemporaryChatSurface(
             page,
             checkpoint => diagnostics.capture(page, checkpoint),
+            turn.persistentChat === true,
           ),
         );
       }
@@ -4674,6 +4682,7 @@ export class ChatGptBrowserWorker {
               await this.prepareTemporaryChatSurface(
                 page,
                 checkpoint => diagnostics.capture(page, checkpoint),
+                turn.persistentChat === true,
               );
               mode = await this.selectModelAndEffort(
                 page,

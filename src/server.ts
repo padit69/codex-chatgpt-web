@@ -365,6 +365,8 @@ export interface ResponseRequestOptions {
    * daemon's mode and omits operator notices that only make sense inside Codex.
    */
   externalApiCaller?: boolean;
+  /** Run the turn in an ordinary ChatGPT conversation instead of a Temporary Chat. */
+  persistentChat?: boolean;
 }
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
@@ -518,6 +520,7 @@ export async function responseRequest(
 
   // Authority comes from the caller of this handler, never from the parsed request body.
   if (options.externalApiCaller) parsed._externalApiCaller = true;
+  if (options.persistentChat) parsed._persistentChat = true;
   const compaction = parsed._compactionRequest === true;
   const rememberCompletedResponse = (response: Record<string, unknown>): void => {
     if (!compaction) {
@@ -1048,7 +1051,7 @@ export function startServer(
   });
   try {
     gateway = startApiGateway(config, {
-      handleResponses: req => httpTurns.track(
+      handleResponses: (req, turnOptions) => httpTurns.track(
         (signal, bindIdentity) => responseRequest(
           new Request(req, { signal }),
           config,
@@ -1059,6 +1062,7 @@ export function startServer(
             // grow without ever being read back through `previous_response_id`.
             rememberState: false,
             externalApiCaller: true,
+            ...(turnOptions.persistentChat ? { persistentChat: true } : {}),
           },
         ),
         req.signal,

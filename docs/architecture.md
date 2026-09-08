@@ -186,6 +186,11 @@ the launcher. Codex keeps using the original port unchanged.
   when the browser tab is reused. The session is echoed as an `x-session-id` header and, for a
   non-streamed reply, a `session_id` body field. Transcripts are per-process, expire after a day,
   are bounded per session, and are never written to disk.
+- `temporary_chat: false` runs the turn in an ordinary ChatGPT conversation instead of the isolated
+  Temporary Chat. Temporary Chat remains the default and the isolation guarantee; the opt-out exists
+  because OpenAI disables first-party capabilities such as image generation inside it. An opted-out
+  turn keeps only the authentication check, and its conversation is saved in the account like any
+  other chat.
 - A gateway turn always runs read-only, even while the daemon runs the Full harness for Codex.
   An API caller owns no sandbox, approval UI, or workspace, so it is never handed the local tool
   capability; Codex keeps its own Full-mode tools on the original port. Zero Risk is refused

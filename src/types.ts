@@ -29,6 +29,13 @@ export interface CodexParsedRequest {
    * client must not be able to claim or disclaim this itself.
    */
   _externalApiCaller?: boolean;
+  /**
+   * True when the turn must run in an ordinary ChatGPT conversation rather than a Temporary Chat.
+   * Temporary Chat is the isolation default; OpenAI disables some first-party capabilities there,
+   * so a caller can opt out per request. Like `_externalApiCaller` this is set by the Responses
+   * handler from its caller, never parsed from the request body.
+   */
+  _persistentChat?: boolean;
 }
 
 export interface CodexContext {

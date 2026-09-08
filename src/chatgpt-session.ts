@@ -2,6 +2,12 @@ import type { Locator, Page } from "playwright-core";
 import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
 
 export const CHATGPT_TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=true";
+/**
+ * An ordinary ChatGPT conversation. Temporary Chat is the isolation default for every Codex turn;
+ * this surface exists only for a caller that explicitly opted out, because OpenAI disables some
+ * first-party capabilities (image generation among them) inside a Temporary Chat.
+ */
+export const CHATGPT_PERSISTENT_CHAT_URL = "https://chatgpt.com/";
 export const CHATGPT_COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",

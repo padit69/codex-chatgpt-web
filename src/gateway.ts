@@ -29,7 +29,15 @@ export interface ApiGatewayConfig {
  * The Responses handler this gateway fronts. It is injected rather than imported so `server.ts`
  * stays the single owner of the Responses pipeline and the two modules do not form an import cycle.
  */
-export type GatewayResponsesHandler = (req: Request) => Promise<Response>;
+export interface GatewayTurnOptions {
+  /** Run in an ordinary ChatGPT conversation instead of a Temporary Chat. */
+  persistentChat?: boolean;
+}
+
+export type GatewayResponsesHandler = (
+  req: Request,
+  options: GatewayTurnOptions,
+) => Promise<Response>;
 
 export interface ApiGatewayDependencies {
   handleResponses: GatewayResponsesHandler;
@@ -211,7 +219,7 @@ export function normalizeGatewayRequest(
       turn_id: identity.turnId,
     },
   };
-  const { session_id: _sessionId, ...passthrough } = raw;
+  const { session_id: _sessionId, temporary_chat: _temporaryChat, ...passthrough } = raw;
   return {
     ...passthrough,
     input,
@@ -389,9 +397,14 @@ export function startApiGateway(
         let normalized: Record<string, unknown>;
         let sessionId: string | undefined;
         let promptText = "";
+        let persistentChat = false;
         try {
           assertRoutableModel(raw.model, config);
           if (raw.session_id !== undefined) sessionId = assertGatewaySessionId(raw.session_id);
+          if (raw.temporary_chat !== undefined) {
+            if (typeof raw.temporary_chat !== "boolean") throw new Error("temporary_chat must be a boolean");
+            persistentChat = raw.temporary_chat === false;
+          }
           if (raw.previous_response_id !== undefined) {
             // The gateway keeps no continuation store, so replaying an id would silently run the
             // turn with partial context. Callers resend the full `input` instead.
@@ -425,7 +438,7 @@ export function startApiGateway(
         // The Responses handler already returns a streaming `text/event-stream` body when the
         // caller asked for `stream: true`. Returning it unchanged keeps the stream unbuffered
         // end to end: no body is read, buffered, or re-encoded on this hop.
-        const response = await dependencies.handleResponses(internal);
+        const response = await dependencies.handleResponses(internal, { persistentChat });
         // Echo the session back so the caller can keep using it. A header carries it for both
         // transports; a streamed body has no place to add a field.
         if (sessionId) response.headers.set("x-session-id", sessionId);
