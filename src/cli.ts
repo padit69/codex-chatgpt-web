@@ -6,7 +6,7 @@ import { existsSync, rmSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { stdin, stdout } from "node:process";
 import { captureSystemBrowserLoginToFile, checkBrowserEngine, loginToChatGpt } from "./browser-login";
-import { CHATGPT_CONNECTOR_NAME, defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
+import { CHATGPT_CONNECTOR_NAME, defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup, saveConfig } from "./config";
 import {
   inspectLauncherBrowserHost,
   inspectLauncherBrowserHostLiveness,
@@ -23,6 +23,8 @@ import {
 import { formatDoctorReport, runDoctor } from "./doctor";
 import { runChatGptMcpMain } from "./adapters/chatgpt-web/mcp-main";
 import { runCommand } from "./process";
+import { createApiToken, listApiTokens, revokeAllApiTokens, revokeApiToken } from "./api-tokens";
+import { DEFAULT_GATEWAY_PORT } from "./gateway";
 import { startServer } from "./server";
 import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, interruptActiveTurn, restartService, startService, stopService, uninstallService } from "./service";
 import { existingFullSetupCredentials, preflightSetup, setup, type SetupOptions } from "./setup";
@@ -49,6 +51,8 @@ Usage:
   codex-chatgpt-web dev chat NAME [--model MODEL] [MESSAGE]
   codex-chatgpt-web dev list
   codex-chatgpt-web serve
+  codex-chatgpt-web gateway <status|enable|disable> [--port NUMBER] [--json]
+  codex-chatgpt-web token <list|create NAME|revoke ID|revoke-all> [--json]
   codex-chatgpt-web mcp [--broker-socket PATH]
   codex-chatgpt-web service <status|install|start|restart|stop|cancel-turns>
   codex-chatgpt-web tunnel <status|start|restart|stop|key-import>
@@ -539,6 +543,112 @@ async function uninstallCommand(args: string[]): Promise<void> {
   stdout.write(keepData ? "Uninstalled; private application data was preserved.\n" : "Uninstalled and removed private application data.\n");
 }
 
+async function gatewayCommand(args: string[]): Promise<void> {
+  const action = args.shift();
+  const json = takeFlag(args, "--json");
+  const requestedPort = takeOption(args, "--port");
+  assertNoArgs(args);
+  if (action !== "status" && action !== "enable" && action !== "disable") {
+    throw new Error("Gateway command must be: gateway <status|enable|disable>");
+  }
+  if (requestedPort !== undefined && action !== "enable") {
+    throw new Error("--port applies only to: gateway enable");
+  }
+  const config = loadConfigForSetup();
+  if (action === "status") {
+    const gateway = config.gateway ?? { enabled: false, port: DEFAULT_GATEWAY_PORT };
+    const tokens = listApiTokens().length;
+    if (json) {
+      stdout.write(`${JSON.stringify({ ...gateway, host: config.host, tokens })}\n`);
+      return;
+    }
+    stdout.write(gateway.enabled
+      ? `Gateway enabled on http://${config.host}:${gateway.port}/v1 with ${tokens} token(s).\n`
+      : `Gateway disabled (would use port ${gateway.port}).\n`);
+    return;
+  }
+  let port = config.gateway?.port ?? DEFAULT_GATEWAY_PORT;
+  if (requestedPort !== undefined) {
+    port = Number(requestedPort);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("--port must be a TCP port number");
+  }
+  if (port === config.port) {
+    throw new Error(`--port must differ from the Responses port (${config.port})`);
+  }
+  const enabled = action === "enable";
+  if (enabled && listApiTokens().length === 0) {
+    // Enabling an exposed listener with no credential would publish an open relay to the
+    // authenticated ChatGPT account the moment a tunnel points at it.
+    throw new Error("Create at least one API token before enabling the gateway: codex-chatgpt-web token create NAME");
+  }
+  saveConfig({ ...config, gateway: { enabled, port } });
+  if (json) {
+    stdout.write(`${JSON.stringify({ enabled, port, host: config.host })}\n`);
+    return;
+  }
+  stdout.write(enabled
+    ? `Gateway enabled on http://${config.host}:${port}/v1. Restart the daemon to apply it.\n`
+    : "Gateway disabled. Restart the daemon to apply it.\n");
+}
+
+async function tokenCommand(args: string[]): Promise<void> {
+  const action = args.shift();
+  const json = takeFlag(args, "--json");
+  if (action === "list") {
+    assertNoArgs(args);
+    const tokens = listApiTokens();
+    if (json) {
+      stdout.write(`${JSON.stringify(tokens)}\n`);
+      return;
+    }
+    if (tokens.length === 0) {
+      stdout.write("No API tokens exist.\n");
+      return;
+    }
+    for (const token of tokens) {
+      stdout.write(`${token.id}  ${token.display}  ${token.name}  created ${token.createdAt}`
+        + `  last used ${token.lastUsedAt ?? "never"}\n`);
+    }
+    return;
+  }
+  if (action === "create") {
+    const name = args.shift();
+    assertNoArgs(args);
+    if (!name) throw new Error("Token command must be: token create NAME");
+    const created = createApiToken(name);
+    if (json) {
+      stdout.write(`${JSON.stringify(created)}\n`);
+      return;
+    }
+    stdout.write(`${created.token}\n`);
+    stdout.write("This token is shown once and is not recoverable. Store it now.\n");
+    return;
+  }
+  if (action === "revoke") {
+    const id = args.shift();
+    assertNoArgs(args);
+    if (!id) throw new Error("Token command must be: token revoke ID");
+    const revoked = revokeApiToken(id);
+    if (json) {
+      stdout.write(`${JSON.stringify(revoked)}\n`);
+      return;
+    }
+    stdout.write(`Revoked ${revoked.display} (${revoked.name}).\n`);
+    return;
+  }
+  if (action === "revoke-all") {
+    assertNoArgs(args);
+    const count = revokeAllApiTokens();
+    if (json) {
+      stdout.write(`${JSON.stringify({ revoked: count })}\n`);
+      return;
+    }
+    stdout.write(`Revoked ${count} token(s).\n`);
+    return;
+  }
+  throw new Error("Token command must be: token <list|create NAME|revoke ID|revoke-all>");
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const home = takeOption(args, "--home");
@@ -583,6 +693,9 @@ async function main(): Promise<void> {
     const config = loadConfig();
     const server = startServer(config);
     stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
+    if (config.gateway?.enabled) {
+      stdout.write(`API gateway listening on http://${config.host}:${config.gateway.port}/v1 (token authentication)\n`);
+    }
     await new Promise<void>(() => {});
   } else if (command === "dev") await runDevCommand(args);
   else if (command === "mcp") await runChatGptMcpMain(args);
@@ -592,6 +705,8 @@ async function main(): Promise<void> {
     if (action !== "interrupt") throw new Error("Hook command must be: hook interrupt");
     await interruptHookCommand(args);
   }
+  else if (command === "gateway") await gatewayCommand(args);
+  else if (command === "token") await tokenCommand(args);
   else if (command === "tunnel") await tunnelCommand(args);
   else if (command === "open") await openCommand(args);
   else if (command === "uninstall") await uninstallCommand(args);

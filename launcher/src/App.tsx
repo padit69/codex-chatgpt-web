@@ -12,6 +12,8 @@ import { createPortal } from "react-dom";
 import { copyFor, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import type {
+  ApiGatewayStatus,
+  ApiTokenSummary,
   BrowserInteractionMode,
   BrowserState,
   DoctorReport,
@@ -611,6 +613,12 @@ function LauncherShell({
                     navigateSurface("mcp");
                   }}
                 />
+                <SidebarItem
+                  active={surface === "api"}
+                  icon="globe"
+                  label={copy.apiNav}
+                  onClick={() => navigateSurface("api")}
+                />
               </SidebarGroup>
               <SidebarGroup label={copy.runtime}>
                 <SidebarItem active={surface === "activity"} icon="activity" label={copy.activity} onClick={() => navigateSurface("activity")} />
@@ -690,6 +698,9 @@ function LauncherShell({
                 snapshot={snapshot}
                 updateState={updateState}
               />
+            ) : null}
+            {surface === "api" ? (
+              <ApiSurface copy={copy} language={language} setError={setError} />
             ) : null}
             {surface === "activity" ? (
               <ActivitySurface copy={copy} language={language} logs={logs} setError={setError} />
@@ -1764,6 +1775,179 @@ function SettingsSurface({
   );
 }
 
+function ApiSurface({
+  copy,
+  language,
+  setError,
+}: {
+  copy: Copy;
+  language: Language;
+  setError: (error: string | null) => void;
+}) {
+  const [gateway, setGateway] = useState<ApiGatewayStatus | null>(null);
+  const [tokens, setTokens] = useState<ApiTokenSummary[]>([]);
+  const [port, setPort] = useState("");
+  const [name, setName] = useState("");
+  const [issued, setIssued] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const [status, list] = await Promise.all([api!.apiGatewayStatus(), api!.apiTokens()]);
+    setGateway(status);
+    setTokens(list);
+    setPort(String(status.port));
+  }, []);
+
+  useEffect(() => {
+    void refresh()
+      .catch((cause) => setError(messageOf(cause)))
+      .finally(() => setLoaded(true));
+  }, [refresh, setError]);
+
+  const guarded = async (action: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleGateway = (enabled: boolean) => void guarded(async () => {
+    const requested = Number(port);
+    await api!.setApiGateway({
+      enabled,
+      ...(enabled && Number.isInteger(requested) ? { port: requested } : {}),
+    });
+    await refresh();
+  });
+
+  const createToken = () => void guarded(async () => {
+    const created = await api!.createApiToken(name);
+    // The plaintext is returned exactly once; hold it in component state until the user leaves.
+    setIssued(created.token);
+    setCopied(false);
+    setName("");
+    await refresh();
+  });
+
+  const revokeToken = (id: string) => void guarded(async () => {
+    await api!.revokeApiToken(id);
+    await refresh();
+  });
+
+  const copyIssued = () => {
+    if (!issued) return;
+    void navigator.clipboard.writeText(issued)
+      .then(() => setCopied(true))
+      .catch((cause: unknown) => setError(messageOf(cause)));
+  };
+
+  const enabled = gateway?.enabled === true;
+  const portValid = Number.isInteger(Number(port)) && Number(port) > 0 && Number(port) < 65_536;
+  const endpoint = gateway ? `http://${gateway.host}:${enabled ? gateway.port : Number(port) || gateway.port}/v1` : "";
+
+  return (
+    <ContentSurface narrow subtitle={copy.apiSubtitle} title={copy.apiTitle}>
+      <SectionHeading label={copy.apiGatewaySection} meta={loaded ? (enabled ? copy.apiGatewayOn : copy.apiGatewayOff) : undefined} />
+      <div className="settings-list">
+        <SettingRow body={copy.apiGatewayBody} flushAfter label={copy.apiGatewaySection}>
+          <Switch
+            checked={enabled}
+            disabled={busy || !loaded || !portValid || (!enabled && tokens.length === 0)}
+            onChange={(checked) => toggleGateway(checked)}
+          />
+        </SettingRow>
+        <div className="field-list">
+          <FieldRow label={copy.apiPortLabel}>
+            <input
+              autoCapitalize="none"
+              autoCorrect="off"
+              inputMode="numeric"
+              onChange={(event) => setPort(event.target.value.replace(/[^0-9]/g, ""))}
+              placeholder="17842"
+              spellCheck={false}
+              value={port}
+            />
+          </FieldRow>
+          <FieldRow label={copy.apiEndpointLabel}>
+            <input readOnly spellCheck={false} value={endpoint} />
+          </FieldRow>
+        </div>
+      </div>
+
+      {loaded && tokens.length === 0 ? (
+        <NoticeRow icon="alert" tone="warning">{copy.apiTokenRequired}</NoticeRow>
+      ) : null}
+      <NoticeRow icon="alert" tone="warning">{copy.apiTunnelNotice}</NoticeRow>
+      <NoticeRow icon="info" tone="success">{copy.apiRestartNotice}</NoticeRow>
+
+      <SectionHeading label={copy.apiTokensSection} meta={String(tokens.length)} spaced />
+      <p className="surface-note">{copy.apiTokensBody}</p>
+      <div className="field-list">
+        <FieldRow label={copy.apiTokenNameLabel}>
+          <input
+            autoCapitalize="none"
+            autoCorrect="off"
+            onChange={(event) => setName(event.target.value)}
+            placeholder={copy.apiTokenNamePlaceholder}
+            spellCheck={false}
+            value={name}
+          />
+        </FieldRow>
+      </div>
+      <PrimaryButton disabled={busy || !name.trim()} onClick={createToken}>
+        {copy.apiCreateToken}
+      </PrimaryButton>
+
+      {issued ? (
+        <div className="doctor-summary is-healthy">
+          <header>
+            <Icon name="check" />
+            <strong>{copy.apiTokenCreatedTitle}</strong>
+          </header>
+          <p>{copy.apiTokenCreatedBody}</p>
+          <div className="field-list">
+            <FieldRow label={copy.apiTokensSection}>
+              <input readOnly spellCheck={false} value={issued} />
+            </FieldRow>
+          </div>
+          <SecondaryButton onClick={copyIssued}>
+            {copied ? copy.apiTokenCopied : copy.apiCopyToken}
+          </SecondaryButton>
+        </div>
+      ) : null}
+
+      {tokens.length === 0 ? (
+        loaded ? <p className="surface-note">{copy.apiNoTokens}</p> : null
+      ) : (
+        <div className="settings-list">
+          {tokens.map((token) => (
+            <SettingRow
+              body={`${token.display} · ${copy.apiTokenCreatedAt} ${formatDateTime(token.createdAt, language)}`
+                + ` · ${copy.apiTokenLastUsed} ${token.lastUsedAt ? formatDateTime(token.lastUsedAt, language) : copy.apiTokenNeverUsed}`}
+              key={token.id}
+              label={token.name}
+            >
+              <SecondaryButton disabled={busy} onClick={() => revokeToken(token.id)}>
+                {copy.apiRevokeToken}
+              </SecondaryButton>
+            </SettingRow>
+          ))}
+        </div>
+      )}
+
+      <SectionHeading label={copy.apiUsageSection} spaced />
+      <p className="surface-note">{copy.apiUsageBody}</p>
+    </ContentSurface>
+  );
+}
+
 function ContentSurface({
   children,
   eyebrow,
@@ -2545,6 +2729,19 @@ function logDetail(detail: Record<string, unknown>): string {
     .slice(0, 3)
     .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
     .join(" · ");
+}
+
+function formatDateTime(value: string, language: Language): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString(language === "ja" ? "ja-JP" : language === "zh-CN" ? "zh-CN" : "en", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
 }
 
 function formatTime(value: string, language: Language): string {

@@ -1,7 +1,7 @@
 export type Language = "en" | "zh-CN" | "ja";
 export type LauncherProfile = "production" | "development";
 export type BrowserInteractionMode = "automatic" | "manual";
-export type Surface = "browser" | "setup" | "mcp" | "activity" | "settings";
+export type Surface = "browser" | "setup" | "mcp" | "api" | "activity" | "settings";
 
 export interface LauncherState {
   version: 1;
@@ -58,6 +58,21 @@ export interface BrowserTabState {
   manualDeadlineAt?: string;
   canCopyPrompt?: boolean;
   canConfirmSent?: boolean;
+}
+
+export interface ApiTokenSummary {
+  id: string;
+  name: string;
+  display: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+export interface ApiGatewayStatus {
+  enabled: boolean;
+  port: number;
+  host: string;
+  tokens: number;
 }
 
 export interface LogRecord {
@@ -155,6 +170,15 @@ export interface LauncherApi {
   setMcpStep(step: number): Promise<LauncherState>;
   setAutostart(enabled: boolean): Promise<{ state: LauncherState; supported: boolean; enabled: boolean }>;
   setBiggerContext(enabled: boolean): Promise<LauncherState>;
+  apiTokens(): Promise<ApiTokenSummary[]>;
+  createApiToken(name: string): Promise<{ token: string; record: ApiTokenSummary }>;
+  revokeApiToken(id: string): Promise<ApiTokenSummary>;
+  apiGatewayStatus(): Promise<ApiGatewayStatus>;
+  setApiGateway(input: { enabled: boolean; port?: number }): Promise<{
+    enabled: boolean;
+    port: number;
+    host: string;
+  }>;
   setZeroRiskPro(enabled: boolean): Promise<LauncherState>;
   setBrowserInteractionMode(mode: BrowserInteractionMode): Promise<{
     state: LauncherState;

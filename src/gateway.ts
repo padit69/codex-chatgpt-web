@@ -1,0 +1,299 @@
+import { randomBytes } from "node:crypto";
+import { touchApiToken, verifyApiToken } from "./api-tokens";
+import {
+  availableChatGptWebModelRoutes,
+  isChatGptWebModelSlug,
+  requireChatGptWebModelRoute,
+  resolveChatGptWebContextLimits,
+} from "./chatgpt-web-models";
+import type { AppConfig } from "./config";
+import { formatErrorResponse } from "./bridge";
+import { readJsonRequestBody } from "./http-body";
+import { VERSION } from "./version";
+
+/**
+ * The Responses listener itself has no bearer secret, because Codex's built-in `openai` provider
+ * cannot carry a bridge-specific credential. The gateway is the opposite trade: a second loopback
+ * listener that only accepts authenticated callers, so an operator can put their own tunnel or
+ * reverse proxy in front of it without exposing the unauthenticated Codex route.
+ */
+export const DEFAULT_GATEWAY_PORT = 17842;
+
+export interface ApiGatewayConfig {
+  enabled: boolean;
+  port: number;
+}
+
+/**
+ * The Responses handler this gateway fronts. It is injected rather than imported so `server.ts`
+ * stays the single owner of the Responses pipeline and the two modules do not form an import cycle.
+ */
+export type GatewayResponsesHandler = (req: Request) => Promise<Response>;
+
+export interface ApiGatewayDependencies {
+  handleResponses: GatewayResponsesHandler;
+  /** Test seam for the token store location. */
+  tokenStorePath?: string;
+}
+
+export interface ApiGatewayServer {
+  port: number;
+  stop(closeActiveConnections?: boolean): Promise<void> | void;
+}
+
+const CORS_HEADERS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "authorization, content-type, x-api-key",
+  "access-control-max-age": "600",
+};
+
+function withCors(response: Response): Response {
+  for (const [key, value] of Object.entries(CORS_HEADERS)) response.headers.set(key, value);
+  return response;
+}
+
+function unauthorized(message: string): Response {
+  const response = formatErrorResponse(401, "invalid_request_error", message);
+  response.headers.set("www-authenticate", 'Bearer realm="codex-chatgpt-web"');
+  return withCors(response);
+}
+
+export function presentedGatewayToken(headers: Headers): string | null {
+  const authorization = headers.get("authorization");
+  if (authorization) {
+    const match = /^Bearer\s+(\S+)$/i.exec(authorization.trim());
+    if (match) return match[1]!;
+    return null;
+  }
+  const apiKey = headers.get("x-api-key");
+  return apiKey?.trim() || null;
+}
+
+/**
+ * Requests reaching the Responses handlers must not carry the gateway credential. Those handlers
+ * forward unrouted models to ChatGPT's official backend using the incoming Authorization header,
+ * and a caller's gateway token is neither valid nor safe to relay upstream.
+ */
+export function sanitizedUpstreamHeaders(headers: Headers): Headers {
+  const sanitized = new Headers(headers);
+  sanitized.delete("authorization");
+  sanitized.delete("x-api-key");
+  sanitized.delete("proxy-authorization");
+  sanitized.delete("cookie");
+  sanitized.set("content-type", "application/json");
+  return sanitized;
+}
+
+function gatewayModelCatalog(config: AppConfig): Record<string, unknown> {
+  const capabilities = {
+    solAvailable: config.solAvailable,
+    proAvailable: config.proAvailable,
+    experimentalBiggerContext: config.experimentalBiggerContext,
+    browserInteractionMode: config.browserInteractionMode,
+    zeroRiskProEnabled: config.zeroRiskProEnabled,
+  };
+  const routes = availableChatGptWebModelRoutes(capabilities);
+  return {
+    object: "list",
+    data: routes.map(route => {
+      const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, capabilities);
+      return {
+        id: route.slug,
+        object: "model",
+        owned_by: "codex-chatgpt-web",
+        display_name: route.displayName,
+        description: route.description,
+        supported_reasoning_efforts: [route.codexEffort],
+        context_window: limits.contextWindow,
+        max_context_window: limits.contextWindow,
+        auto_compact_token_limit: limits.autoCompactTokenLimit,
+      };
+    }),
+  };
+}
+
+/**
+ * Only routed ChatGPT Web models may run through the gateway. Without this guard a caller could
+ * name any native model and have the request proxied to ChatGPT's official Codex backend.
+ */
+function assertRoutableModel(model: unknown, config: AppConfig): string {
+  if (typeof model !== "string" || !model.trim()) {
+    throw new Error("A model is required");
+  }
+  if (!isChatGptWebModelSlug(model)) {
+    throw new Error(
+      `The gateway serves only ChatGPT Web models. Use one of the chatgpt-web/ ids from GET /v1/models, not ${JSON.stringify(model)}.`,
+    );
+  }
+  requireChatGptWebModelRoute(model, config);
+  return model;
+}
+
+/**
+ * Identity a single gateway call presents to the adapter. Codex supplies these from its own task
+ * lifecycle; a third-party client has no equivalent, so the gateway mints one per request.
+ */
+export interface GatewayTurnIdentity {
+  threadId: string;
+  turnId: string;
+}
+
+export function gatewayTurnIdentity(): GatewayTurnIdentity {
+  return {
+    threadId: `gwthread_${randomBytes(12).toString("hex")}`,
+    turnId: `gwturn_${randomBytes(12).toString("hex")}`,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isUserMessageItem(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const type = value.type;
+  return (type === undefined || type === "message") && value.role === "user";
+}
+
+/**
+ * Rewrite an ordinary Responses request into the exact shape the ChatGPT adapter expects.
+ *
+ * The adapter is built for native Codex, which stamps every request with its thread/turn identity
+ * and marks which user message the current turn must execute. A plain API client sends neither, so
+ * without this normalization every gateway call fails on missing turn metadata. Only transport
+ * identity is added here: the caller's messages, model, and options are passed through untouched.
+ */
+export function normalizeGatewayRequest(
+  raw: Record<string, unknown>,
+  identity: GatewayTurnIdentity = gatewayTurnIdentity(),
+): Record<string, unknown> {
+  const input = typeof raw.input === "string"
+    ? [{ type: "message", role: "user", content: [{ type: "input_text", text: raw.input }] }]
+    : Array.isArray(raw.input) ? [...raw.input] : [];
+  const lastUserIndex = input.findLastIndex(isUserMessageItem);
+  if (lastUserIndex < 0) {
+    throw new Error("A user message is required in `input`.");
+  }
+  // Marking only the final user message keeps every earlier item history, exactly as Codex does:
+  // the adapter executes the latest instruction owned by the current turn.
+  const current = input[lastUserIndex] as Record<string, unknown>;
+  input[lastUserIndex] = {
+    ...current,
+    type: "message",
+    internal_chat_message_metadata_passthrough: {
+      ...(isRecord(current.internal_chat_message_metadata_passthrough)
+        ? current.internal_chat_message_metadata_passthrough
+        : {}),
+      turn_id: identity.turnId,
+    },
+  };
+  return {
+    ...raw,
+    input,
+    client_metadata: {
+      ...(isRecord(raw.client_metadata) ? raw.client_metadata : {}),
+      "x-codex-turn-metadata": { thread_id: identity.threadId, turn_id: identity.turnId },
+    },
+  };
+}
+
+export function startApiGateway(
+  config: AppConfig,
+  dependencies: ApiGatewayDependencies,
+): ApiGatewayServer | undefined {
+  const gateway = config.gateway;
+  if (!gateway?.enabled) return undefined;
+  if (gateway.port === config.port) {
+    throw new Error("The API gateway port must differ from the Responses port");
+  }
+  const authorize = (req: Request): { ok: true; tokenId: string } | { ok: false; response: Response } => {
+    const presented = presentedGatewayToken(req.headers);
+    if (!presented) {
+      return {
+        ok: false,
+        response: unauthorized("Provide an API token as `Authorization: Bearer <token>` or `x-api-key`."),
+      };
+    }
+    const record = verifyApiToken(presented, dependencies.tokenStorePath);
+    if (!record) return { ok: false, response: unauthorized("The presented API token is not valid.") };
+    touchApiToken(record.id, dependencies.tokenStorePath);
+    return { ok: true, tokenId: record.id };
+  };
+
+  const server = Bun.serve({
+    hostname: config.host,
+    port: gateway.port,
+    // A browser turn can legitimately stay open for minutes while Codex-side tools run.
+    idleTimeout: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (req.method === "OPTIONS") return withCors(new Response(null, { status: 204 }));
+      if (req.method === "GET" && url.pathname === "/healthz") {
+        // Unauthenticated on purpose: an operator's tunnel or proxy needs a liveness probe, and
+        // this payload deliberately carries no account, model, or token information.
+        return withCors(Response.json({
+          status: "ok",
+          service: "codex-chatgpt-web-gateway",
+          version: VERSION,
+        }));
+      }
+      const auth = authorize(req);
+      if (!auth.ok) return auth.response;
+
+      if (req.method === "GET" && url.pathname === "/v1/models") {
+        return withCors(Response.json(gatewayModelCatalog(config)));
+      }
+      if (req.method === "POST" && url.pathname === "/v1/responses") {
+        let raw: Record<string, unknown>;
+        try {
+          const parsed = await readJsonRequestBody(req);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+          raw = parsed as Record<string, unknown>;
+        } catch (error) {
+          return withCors(formatErrorResponse(
+            400,
+            "invalid_request_error",
+            error instanceof Error ? error.message : "Request body must be a JSON object",
+          ));
+        }
+        let normalized: Record<string, unknown>;
+        try {
+          assertRoutableModel(raw.model, config);
+          if (raw.previous_response_id !== undefined) {
+            // The gateway keeps no continuation store, so replaying an id would silently run the
+            // turn with partial context. Callers resend the full `input` instead.
+            throw new Error(
+              "previous_response_id is not supported by the gateway. Send the full conversation in `input`.",
+            );
+          }
+          normalized = normalizeGatewayRequest(raw);
+        } catch (error) {
+          return withCors(formatErrorResponse(
+            400,
+            "invalid_request_error",
+            error instanceof Error ? error.message : String(error),
+          ));
+        }
+        const internal = new Request("http://127.0.0.1/v1/responses", {
+          method: "POST",
+          headers: sanitizedUpstreamHeaders(req.headers),
+          body: JSON.stringify(normalized),
+          signal: req.signal,
+        });
+        // The Responses handler already returns a streaming `text/event-stream` body when the
+        // caller asked for `stream: true`. Returning it unchanged keeps the stream unbuffered
+        // end to end: no body is read, buffered, or re-encoded on this hop.
+        const response = await dependencies.handleResponses(internal);
+        return withCors(response);
+      }
+      return withCors(new Response("Not found", { status: 404 }));
+    },
+  });
+  // Bun types `port` as optional because a unix-socket server has none. This listener always binds
+  // a TCP port, so surface the resolved value rather than propagating the optionality.
+  return {
+    port: server.port ?? gateway.port,
+    stop: closeActiveConnections => server.stop(closeActiveConnections),
+  };
+}

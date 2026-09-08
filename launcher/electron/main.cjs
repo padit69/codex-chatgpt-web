@@ -766,6 +766,23 @@ function registerIpc({ logger, stateStore }) {
     if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
     return state;
   });
+  handle("launcher:api-tokens", () => runtimeHost.apiTokens());
+  handle("launcher:api-token-create", (_event, name) => runtimeHost.createApiToken(name));
+  handle("launcher:api-token-revoke", (_event, id) => runtimeHost.revokeApiToken(id));
+  handle("launcher:api-gateway-status", () => runtimeHost.apiGatewayStatus());
+  handle("launcher:api-gateway-set", async (_event, input) => {
+    if (!input || typeof input !== "object") throw new Error("Gateway settings are required");
+    const browserOperation = browserHost.currentOperation();
+    if (browserHost.activeTraceId || browserOperation) {
+      throw new Error(browserHost.activeTraceId
+        ? "Finish or cancel active ChatGPT turns before changing the API gateway"
+        : `Finish ${browserOperation} before changing the API gateway`);
+    }
+    return runtimeHost.setApiGateway({
+      enabled: input.enabled === true,
+      port: Number.isInteger(input.port) ? input.port : undefined,
+    });
+  });
   handle("launcher:zero-risk-pro", async (_event, enabled) => {
     const browserOperation = browserHost.currentOperation();
     if (browserHost.activeTraceId || browserOperation) {

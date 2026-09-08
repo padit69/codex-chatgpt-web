@@ -142,6 +142,32 @@ every later tool action in the same turn continues to present the current turn c
 ChatGPT status rows become reasoning summaries, while stable prose between rows becomes native
 Codex commentary.
 
+## Optional public API gateway
+
+The Responses listener has no bearer secret, so it must never be the surface an operator exposes.
+The gateway is a second loopback listener, disabled by default, that serves the same routed
+ChatGPT Web models to non-Codex clients and accepts only requests carrying an API token created in
+the launcher. Codex keeps using the original port unchanged.
+
+- Tokens live in `api-tokens.json` under the application home with mode `0600`. Only a SHA-256
+  verifier is stored: the plaintext is displayed once at creation and can never be read back.
+  Each token is revocable on its own and records a throttled last-use timestamp.
+- `GET /healthz` is unauthenticated and reports only status, service, and version. Every other
+  route requires `Authorization: Bearer <token>` or `x-api-key`.
+- `GET /v1/models` returns only the `chatgpt-web/` rows the authenticated account can actually use.
+  `POST /v1/responses` rejects any other model id rather than proxying it to ChatGPT's official
+  backend, and the caller's credential is stripped before the request reaches the Responses
+  handlers so a local token is never relayed upstream.
+- Requests are streamed through unchanged. When the caller sets `stream: true`, the adapter's
+  `text/event-stream` body is returned without being read, buffered, or re-encoded, preserving
+  `Cache-Control: no-cache` and `X-Accel-Buffering: no` end to end.
+- A third-party client carries no Codex task identity, so the gateway mints one thread and turn id
+  per request and marks the final user message as that turn's instruction. Each call is therefore
+  an independent task with its own Temporary Chat; callers resend the full conversation in `input`,
+  and `previous_response_id` is refused rather than silently running with partial context.
+- The listener still binds `127.0.0.1` only. Publishing it is the operator's own tunnel or reverse
+  proxy, and every request continues to consume the same five-tab browser budget.
+
 ## Installation and service lifecycle
 
 Each native desktop package contains Electron, a platform-matched pinned Bun executable, the

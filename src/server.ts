@@ -35,6 +35,7 @@ import {
   requireChatGptWebModelRoute,
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
+import { startApiGateway, type ApiGatewayServer } from "./gateway";
 import { forwardNativeCodexRequest, type NativeFetch } from "./native-passthrough";
 import {
   buildCompactV1Output,
@@ -350,7 +351,7 @@ export class HttpTurnCounter {
   }
 }
 
-type ChatGptWebAdapterFactory = (provider: CodexProviderConfig) => ProviderAdapter;
+export type ChatGptWebAdapterFactory = (provider: CodexProviderConfig) => ProviderAdapter;
 
 export interface ResponseRequestOptions {
   /** DEV and other in-process harnesses can keep continuation state in their own canonical store. */
@@ -782,6 +783,7 @@ export function startServer(
     const actual = Buffer.from(header);
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   };
+  let gateway: ApiGatewayServer | undefined;
   const server = Bun.serve({
     hostname: config.host,
     port: config.port,
@@ -1008,6 +1010,34 @@ export function startServer(
       return new Response("Not found", { status: 404 });
     },
   });
+  try {
+    gateway = startApiGateway(config, {
+      handleResponses: req => httpTurns.track(
+        (signal, bindIdentity) => responseRequest(
+          new Request(req, { signal }),
+          config,
+          dependencies.adapterFactory,
+          {
+            onTurnIdentity: bindIdentity,
+            // Gateway callers have no Codex thread to replay, so continuation state would only
+            // grow without ever being read back through `previous_response_id`.
+            rememberState: false,
+          },
+        ),
+        req.signal,
+        process.platform,
+        "responses",
+      ),
+    });
+    if (gateway) {
+      console.log(`[codex-chatgpt-web] api gateway listening on http://${config.host}:${gateway.port}/v1`);
+    }
+  } catch (error) {
+    // The gateway is an optional surface. A misconfigured or busy port must not take down the
+    // Codex Responses route that Codex itself depends on.
+    server.stop(true);
+    throw error;
+  }
   function shutdown(): void {
     if (shutdownPromise) return;
     draining = true;
@@ -1017,6 +1047,7 @@ export function startServer(
       const results = await Promise.allSettled([
         closeChatGptBrowserWorkers(),
         closeTurnBrokers(),
+        gateway ? gateway.stop(true) : undefined,
       ]);
       const failures = results
         .filter((result): result is PromiseRejectedResult => result.status === "rejected")

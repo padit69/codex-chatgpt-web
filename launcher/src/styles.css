@@ -1286,6 +1286,7 @@ code {
   font-weight: 500;
 }
 
+.surface-note,
 .setup-row p,
 .setting-row p {
   max-width: 470px;
@@ -2702,4 +2703,8 @@ code {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+.surface-note {
+  margin: 4px 0 14px;
 }

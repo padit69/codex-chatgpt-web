@@ -82,6 +82,23 @@ request and long-lived browser/tool loop are idle, flush response state, and sto
 token does not turn loopback into a hostile-local-process security boundary; it prevents accidental
 or unauthenticated lifecycle control through ordinary requests.
 
+### Exposed API gateway
+
+The optional gateway is the only surface intended to sit behind an operator-provided tunnel. It
+authenticates every request against an individually revocable API token and refuses to start until
+at least one token exists, so enabling it can never publish an open relay to the authenticated
+ChatGPT account.
+
+The token is a bearer credential for that account: whoever holds one can spend its usage and, in
+Full mode, reach the local Codex tools any turn exposes. Treat a leaked token as an account
+compromise and revoke it from the launcher. Tokens are stored only as SHA-256 verifiers, so a
+stolen store cannot be replayed, but neither can a lost token be recovered.
+
+The gateway does not widen the model surface: it serves only routed `chatgpt-web/` ids, strips the
+caller's credential before the request reaches the Responses handlers, and keeps no continuation
+state. It shares the five-tab browser budget with Codex, so exposing it does not raise the parallel
+traffic ceiling on the account.
+
 ### Browser/UI drift
 
 ChatGPT DOM and labels are not a stable API. Selectors are narrow; Full-mode completion requires

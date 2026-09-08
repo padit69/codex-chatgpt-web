@@ -7,6 +7,7 @@ import {
   CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
 } from "./chatgpt-web-models";
+import type { ApiGatewayConfig } from "./gateway";
 import type { CodexProviderConfig } from "./types";
 import { VERSION } from "./version";
 
@@ -126,6 +127,11 @@ export interface AppConfig {
   stallTimeoutSec?: number;
   autoApproveToolCalls: boolean;
   controlToken: string;
+  /**
+   * Optional token-authenticated listener for non-Codex clients. It is a separate port so the
+   * unauthenticated Codex Responses route is never the surface an operator exposes.
+   */
+  gateway?: ApiGatewayConfig;
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
   tunnel?: TunnelConfig;
@@ -503,6 +509,19 @@ function parseConfig(value: unknown, path: string): AppConfig {
     }
     if (activeTunnel && JSON.stringify(activeTunnel) !== JSON.stringify(parsed.tunnel)) {
       throw new Error(`Active tunnel does not match browserInteractionMode in ${path}; rerun MCP setup`);
+    }
+  }
+  if (parsed.gateway !== undefined) {
+    const gateway = parsed.gateway;
+    if (!gateway || typeof gateway !== "object" || Array.isArray(gateway)) {
+      throw new Error(`Invalid gateway in ${path}`);
+    }
+    if (typeof gateway.enabled !== "boolean") throw new Error(`Invalid gateway.enabled in ${path}`);
+    if (!Number.isInteger(gateway.port) || gateway.port < 1 || gateway.port > 65_535) {
+      throw new Error(`Invalid gateway.port in ${path}`);
+    }
+    if (gateway.port === parsed.port) {
+      throw new Error(`gateway.port must differ from the Responses port in ${path}`);
     }
   }
   if (!Array.isArray(parsed.runtimeCommand) || parsed.runtimeCommand.length === 0

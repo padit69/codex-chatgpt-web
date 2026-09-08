@@ -369,6 +369,89 @@ class RuntimeHost {
     });
   }
 
+  /**
+   * Run a short runtime command that produces JSON on stdout. Unlike `run`, this does not take the
+   * launcher operation lock or publish an operation: API token bookkeeping is a local file edit,
+   * not a lifecycle transition, and must stay usable while other surfaces are idle.
+   */
+  runJson(name, args, timeoutMs = 15_000) {
+    const invocation = this.command(args);
+    return new Promise((resolve, reject) => {
+      const child = spawn(invocation.executable, invocation.args, {
+        cwd: invocation.cwd,
+        env: {
+          ...process.env,
+          CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      const stdout = [];
+      const stderr = [];
+      child.stdout.on("data", (chunk) => stdout.push(chunk));
+      child.stderr.on("data", (chunk) => stderr.push(chunk));
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`${name} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      child.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once("close", (code) => {
+        clearTimeout(timer);
+        const out = Buffer.concat(stdout).toString("utf8").trim();
+        const err = Buffer.concat(stderr).toString("utf8").trim();
+        if (code !== 0) {
+          reject(new Error(err || out || `${name} exited with code ${code}`));
+          return;
+        }
+        try {
+          resolve(out ? JSON.parse(out) : null);
+        } catch {
+          reject(new Error(`${name} did not return JSON`));
+        }
+      });
+    });
+  }
+
+  async apiTokens() {
+    return this.runJson("api-token-list", ["token", "list", "--json"]);
+  }
+
+  async createApiToken(name) {
+    if (typeof name !== "string" || !name.trim()) throw new Error("A token name is required");
+    // The plaintext token exists only in this response. It is never logged and never re-readable.
+    const created = await this.runJson("api-token-create", ["token", "create", name.trim(), "--json"]);
+    this.logger.info("runtime.api_token_created", { id: created?.record?.id });
+    return created;
+  }
+
+  async revokeApiToken(id) {
+    if (typeof id !== "string" || !/^tok_[a-f0-9]{24}$/.test(id)) throw new Error("A token id is required");
+    const revoked = await this.runJson("api-token-revoke", ["token", "revoke", id, "--json"]);
+    this.logger.info("runtime.api_token_revoked", { id });
+    return revoked;
+  }
+
+  async apiGatewayStatus() {
+    return this.runJson("api-gateway-status", ["gateway", "status", "--json"]);
+  }
+
+  /**
+   * Apply a gateway change and restart the daemon so the listener actually starts or stops. The
+   * config write is what persists; the restart is what makes it observable.
+   */
+  async setApiGateway({ enabled, port }) {
+    const args = enabled === true
+      ? ["gateway", "enable", "--json", ...(Number.isInteger(port) ? ["--port", String(port)] : [])]
+      : ["gateway", "disable", "--json"];
+    const result = await this.runJson("api-gateway-set", args, 20_000);
+    await this.supervisor.restart();
+    this.logger.info("runtime.api_gateway_updated", { enabled: result?.enabled, port: result?.port });
+    return result;
+  }
+
   launcherControlEnvironment() {
     let descriptor;
     try {
