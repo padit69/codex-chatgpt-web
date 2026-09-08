@@ -3,8 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApiToken, resetApiTokenCaches } from "../src/api-tokens";
+import { GatewaySessionStore } from "../src/gateway-sessions";
 import type { AppConfig } from "../src/config";
 import {
+  completedAnswerText,
   gatewayTurnIdentity,
   normalizeGatewayRequest,
   presentedGatewayToken,
@@ -42,8 +44,16 @@ async function recordingHandler(req: Request): Promise<Response> {
   return Response.json({ ok: true, echoed: JSON.parse(body) });
 }
 
-function start(handler = recordingHandler, overrides: Partial<AppConfig> = {}): string {
-  gateway = startApiGateway(config(overrides), { handleResponses: handler, tokenStorePath: store });
+function start(
+  handler = recordingHandler,
+  overrides: Partial<AppConfig> = {},
+  sessions?: GatewaySessionStore,
+): string {
+  gateway = startApiGateway(config(overrides), {
+    handleResponses: handler,
+    tokenStorePath: store,
+    ...(sessions ? { sessions } : {}),
+  });
   if (!gateway) throw new Error("gateway did not start");
   return `http://127.0.0.1:${gateway.port}`;
 }
@@ -449,5 +459,91 @@ describe("API gateway request normalization", () => {
       model: "chatgpt-web/medium",
       input: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "x" }] }],
     }, identity)).toThrow(/user message is required/);
+  });
+});
+
+describe("API gateway sessions", () => {
+  const identity = { threadId: "gwthread_test", turnId: "gwturn_test" };
+
+  test("the same session id yields a stable thread while each turn is new", () => {
+    const first = gatewayTurnIdentity("abc");
+    const second = gatewayTurnIdentity("abc");
+    const other = gatewayTurnIdentity("xyz");
+
+    // The adapter keys conversation retention on the thread, so it must be stable per session.
+    expect(first.threadId).toBe(second.threadId);
+    expect(first.threadId).not.toBe(other.threadId);
+    expect(first.turnId).not.toBe(second.turnId);
+    expect(first.threadId).toMatch(/^[A-Za-z0-9_-]{6,128}$/);
+    // The raw session id must not be recoverable from the thread identity.
+    expect(first.threadId).not.toContain("abc");
+  });
+
+  test("replays the stored transcript ahead of the new message", async () => {
+    const store = new GatewaySessionStore();
+    store.append("s1", [
+      { role: "user", text: "remember 4271" },
+      { role: "assistant", text: "noted" },
+    ]);
+    const base = start(recordingHandler, {}, store);
+
+    const response = await fetch(`${base}/v1/responses`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "chatgpt-web/medium", session_id: "s1", input: "which number?" }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-session-id")).toBe("s1");
+    await response.text();
+
+    const forwarded = JSON.parse(observed[0]!.body) as { input: Array<Record<string, unknown>> };
+    expect(forwarded.input).toHaveLength(3);
+    expect(forwarded.input[0]).toMatchObject({ role: "user" });
+    expect(forwarded.input[1]).toMatchObject({ role: "assistant" });
+    // Only the newest user message may be marked as this turn's instruction.
+    expect(forwarded.input[2]!.internal_chat_message_metadata_passthrough).toBeDefined();
+    expect(forwarded.input[0]!.internal_chat_message_metadata_passthrough).toBeUndefined();
+    // `session_id` is gateway-only and must not reach the Responses handler.
+    expect(JSON.parse(observed[0]!.body).session_id).toBeUndefined();
+  });
+
+  test("a request without a session id replays nothing and echoes no session", async () => {
+    const store = new GatewaySessionStore();
+    store.append("s1", [{ role: "user", text: "remember 4271" }, { role: "assistant", text: "noted" }]);
+    const base = start(recordingHandler, {}, store);
+
+    const response = await fetch(`${base}/v1/responses`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "chatgpt-web/medium", input: "which number?" }),
+    });
+    await response.text();
+
+    expect(response.headers.get("x-session-id")).toBeNull();
+    expect((JSON.parse(observed[0]!.body) as { input: unknown[] }).input).toHaveLength(1);
+  });
+
+  test("rejects a malformed session id", async () => {
+    const base = start();
+    const response = await fetch(`${base}/v1/responses`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "chatgpt-web/medium", session_id: "bad id!", input: "hi" }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("session_id");
+    expect(observed).toEqual([]);
+  });
+
+  test("reads the answer out of a completed response", () => {
+    expect(completedAnswerText({
+      output: [
+        { type: "message", phase: "commentary", content: [{ type: "output_text", text: "notice" }] },
+        { type: "message", phase: "final_answer", content: [{ type: "output_text", text: "4271" }] },
+      ],
+    })).toBe("4271");
+    expect(completedAnswerText({ output: [] })).toBe("");
+    expect(completedAnswerText(null)).toBe("");
   });
 });

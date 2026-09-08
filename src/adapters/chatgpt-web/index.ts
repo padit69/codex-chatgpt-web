@@ -412,9 +412,12 @@ export function createChatGptWebAdapter(
     const checkpointInput = captureLunaCheckpoint
       ? lunaCheckpointStore.apply(parsed)
       : { parsed, applied: false };
+    // Retention was originally tied to the local-tool capability because only a Codex task had a
+    // stable thread. An API gateway caller supplies its own `session_id`, which the gateway turns
+    // into the same stable thread identity, so a read-only external turn can retain its chat too.
     const conversationKey = !parsed._compactionRequest
       && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
-      && mode.localTools
+      && (mode.localTools || parsed._externalApiCaller === true)
       && retainedLauncherDescriptor
       ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
       : undefined;

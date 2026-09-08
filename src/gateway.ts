@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { touchApiToken, verifyApiToken } from "./api-tokens";
 import {
   availableChatGptWebModelRoutes,
@@ -7,6 +7,7 @@ import {
   resolveChatGptWebContextLimits,
 } from "./chatgpt-web-models";
 import type { AppConfig } from "./config";
+import { GatewaySessionStore, type GatewaySessionMessage } from "./gateway-sessions";
 import { formatErrorResponse } from "./bridge";
 import { readJsonRequestBody } from "./http-body";
 import { VERSION } from "./version";
@@ -32,6 +33,8 @@ export type GatewayResponsesHandler = (req: Request) => Promise<Response>;
 
 export interface ApiGatewayDependencies {
   handleResponses: GatewayResponsesHandler;
+  /** Test seam; defaults to a store private to this listener. */
+  sessions?: GatewaySessionStore;
   /** Test seam for the token store location. */
   tokenStorePath?: string;
 }
@@ -139,9 +142,29 @@ export interface GatewayTurnIdentity {
   turnId: string;
 }
 
-export function gatewayTurnIdentity(): GatewayTurnIdentity {
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+export function assertGatewaySessionId(value: unknown): string {
+  if (typeof value !== "string" || !SESSION_ID_PATTERN.test(value)) {
+    throw new Error(
+      "session_id must be 1-128 characters of letters, digits, and the symbols _ . : -",
+    );
+  }
+  return value;
+}
+
+/**
+ * Derive the turn identity for one gateway call.
+ *
+ * The thread is what the adapter keys conversation retention on, so a caller that repeats the same
+ * `session_id` lands on the same retained ChatGPT chat and only sends the new suffix. Without one,
+ * every call gets its own thread and therefore its own fresh chat.
+ */
+export function gatewayTurnIdentity(sessionId?: string): GatewayTurnIdentity {
   return {
-    threadId: `gwthread_${randomBytes(12).toString("hex")}`,
+    threadId: sessionId
+      ? `gwthread_${createHash("sha256").update(`gateway-session\u0000${sessionId}`).digest("hex").slice(0, 32)}`
+      : `gwthread_${randomBytes(12).toString("hex")}`,
     turnId: `gwturn_${randomBytes(12).toString("hex")}`,
   };
 }
@@ -188,14 +211,107 @@ export function normalizeGatewayRequest(
       turn_id: identity.turnId,
     },
   };
+  const { session_id: _sessionId, ...passthrough } = raw;
   return {
-    ...raw,
+    ...passthrough,
     input,
     client_metadata: {
       ...(isRecord(raw.client_metadata) ? raw.client_metadata : {}),
       "x-codex-turn-metadata": { thread_id: identity.threadId, turn_id: identity.turnId },
     },
   };
+}
+
+/** Flatten one Responses input item into plain text for the session transcript. */
+export function inputItemText(value: unknown): string {
+  if (!isRecord(value)) return "";
+  const content = value.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map(part => (isRecord(part) && typeof part.text === "string" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** The assistant text a completed non-streamed response returned to the caller. */
+export function completedAnswerText(body: unknown): string {
+  if (!isRecord(body) || !Array.isArray(body.output)) return "";
+  return body.output
+    .filter(item => isRecord(item) && item.type === "message" && item.phase !== "commentary")
+    .map(item => (isRecord(item) && Array.isArray(item.content)
+      ? item.content
+        .map(part => (isRecord(part) && typeof part.text === "string" ? part.text : ""))
+        .join("")
+      : ""))
+    .join("\n")
+    .trim();
+}
+
+/** Turn a stored transcript into Responses input items the prompt compiler already understands. */
+function historyItems(messages: GatewaySessionMessage[]): Array<Record<string, unknown>> {
+  return messages.map(message => (message.role === "assistant"
+    ? { type: "message", role: "assistant", content: [{ type: "output_text", text: message.text }] }
+    : { type: "message", role: "user", content: [{ type: "input_text", text: message.text }] }));
+}
+
+/**
+ * Pass an event stream through untouched while accumulating the answer it carries.
+ *
+ * The bytes are forwarded as they arrive, so streaming stays incremental; the accumulated text is
+ * only used to record the exchange once the stream reports completion.
+ */
+export function streamAndRemember(
+  response: Response,
+  remember: (answer: string) => void,
+): Response {
+  const decoder = new TextDecoder();
+  let pending = "";
+  let answer = "";
+  let completed = false;
+  const consume = (chunk: string) => {
+    pending += chunk;
+    let newline = pending.indexOf("\n");
+    while (newline >= 0) {
+      const line = pending.slice(0, newline).trim();
+      pending = pending.slice(newline + 1);
+      newline = pending.indexOf("\n");
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      let event: unknown;
+      try {
+        event = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      if (!isRecord(event)) continue;
+      if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+        answer += event.delta;
+      } else if (event.type === "response.completed") {
+        completed = true;
+        // The terminal frame carries the authoritative output, including any part the deltas
+        // did not cover; prefer it over the accumulated text when it is present.
+        const final = completedAnswerText(event.response);
+        if (final) answer = final;
+      }
+    }
+  };
+  const transform = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      controller.enqueue(chunk);
+      consume(decoder.decode(chunk, { stream: true }));
+    },
+    flush() {
+      consume(decoder.decode());
+      if (completed) remember(answer);
+    },
+  });
+  return new Response(response.body!.pipeThrough(transform), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 export function startApiGateway(
@@ -207,6 +323,7 @@ export function startApiGateway(
   if (gateway.port === config.port) {
     throw new Error("The API gateway port must differ from the Responses port");
   }
+  const sessions = dependencies.sessions ?? new GatewaySessionStore();
   const authorize = (req: Request): { ok: true; tokenId: string } | { ok: false; response: Response } => {
     const presented = presentedGatewayToken(req.headers);
     if (!presented) {
@@ -270,8 +387,11 @@ export function startApiGateway(
           ));
         }
         let normalized: Record<string, unknown>;
+        let sessionId: string | undefined;
+        let promptText = "";
         try {
           assertRoutableModel(raw.model, config);
+          if (raw.session_id !== undefined) sessionId = assertGatewaySessionId(raw.session_id);
           if (raw.previous_response_id !== undefined) {
             // The gateway keeps no continuation store, so replaying an id would silently run the
             // turn with partial context. Callers resend the full `input` instead.
@@ -279,7 +399,16 @@ export function startApiGateway(
               "previous_response_id is not supported by the gateway. Send the full conversation in `input`.",
             );
           }
-          normalized = normalizeGatewayRequest(raw);
+          const requestInput = typeof raw.input === "string"
+            ? [{ type: "message", role: "user", content: [{ type: "input_text", text: raw.input }] }]
+            : Array.isArray(raw.input) ? raw.input : [];
+          // Replay the stored transcript ahead of the caller's new items. The compiled envelope is
+          // the model's only view of the conversation, so continuity has to live in `input`.
+          const withHistory = sessionId
+            ? { ...raw, input: [...historyItems(sessions.history(sessionId)), ...requestInput] }
+            : raw;
+          normalized = normalizeGatewayRequest(withHistory, gatewayTurnIdentity(sessionId));
+          promptText = requestInput.map(inputItemText).filter(Boolean).join("\n");
         } catch (error) {
           return withCors(formatErrorResponse(
             400,
@@ -297,7 +426,35 @@ export function startApiGateway(
         // caller asked for `stream: true`. Returning it unchanged keeps the stream unbuffered
         // end to end: no body is read, buffered, or re-encoded on this hop.
         const response = await dependencies.handleResponses(internal);
-        return withCors(response);
+        // Echo the session back so the caller can keep using it. A header carries it for both
+        // transports; a streamed body has no place to add a field.
+        if (sessionId) response.headers.set("x-session-id", sessionId);
+        if (!sessionId || !response.ok || !response.body) return withCors(response);
+        const session = sessionId;
+        const prompt = promptText;
+        const remember = (answer: string) => {
+          if (!answer.trim()) return;
+          sessions.append(session, [
+            ...(prompt ? [{ role: "user" as const, text: prompt }] : []),
+            { role: "assistant" as const, text: answer },
+          ]);
+        };
+        if (raw.stream === true) return withCors(streamAndRemember(response, remember));
+        const body = await response.text();
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          return withCors(new Response(body, response));
+        }
+        if (isRecord(parsed) && parsed.status === "completed") remember(completedAnswerText(parsed));
+        // Surface the session on the body too, so a non-streaming caller sees it without headers.
+        const enriched = isRecord(parsed) ? { ...parsed, session_id: session } : parsed;
+        return withCors(new Response(JSON.stringify(enriched), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        }));
       }
       return withCors(new Response("Not found", { status: 404 }));
     },

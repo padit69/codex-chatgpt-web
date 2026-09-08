@@ -178,6 +178,14 @@ the launcher. Codex keeps using the original port unchanged.
   per request and marks the final user message as that turn's instruction. Each call is therefore
   an independent task with its own Temporary Chat; callers resend the full conversation in `input`,
   and `previous_response_id` is refused rather than silently running with partial context.
+- An optional `session_id` gives a caller conversation continuity. The gateway derives a stable
+  thread identity from it and keeps that session's transcript in memory, replaying it ahead of the
+  new message. Continuity has to live in `input` because the compiled envelope is the model's only
+  view of the conversation: the adapter was built for Codex, which resends its full history every
+  turn, so a caller that sends only its newest message would otherwise meet an amnesiac model even
+  when the browser tab is reused. The session is echoed as an `x-session-id` header and, for a
+  non-streamed reply, a `session_id` body field. Transcripts are per-process, expire after a day,
+  are bounded per session, and are never written to disk.
 - A gateway turn always runs read-only, even while the daemon runs the Full harness for Codex.
   An API caller owns no sandbox, approval UI, or workspace, so it is never handed the local tool
   capability; Codex keeps its own Full-mode tools on the original port. Zero Risk is refused
