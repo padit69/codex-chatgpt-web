@@ -348,6 +348,7 @@ async function rewriteAnswerImages(
 ): Promise<Record<string, unknown>> {
   const descriptorPath = config.browserHostDescriptorPath;
   if (!descriptorPath || !Array.isArray(body.output)) return body;
+  const images: Array<Record<string, unknown>> = [];
   const output = [];
   for (const item of body.output) {
     if (!isRecord(item) || !Array.isArray(item.content)) {
@@ -362,7 +363,10 @@ async function rewriteAnswerImages(
       }
       try {
         const rewritten = await downloadAnswerImages(part.text, { descriptorPath, signingKey, store: files });
-        content.push(rewritten.downloaded > 0 ? { ...part, text: rewritten.markdown } : part);
+        for (const image of rewritten.images) {
+          images.push({ url: image.url, content_type: image.contentType, bytes: image.bytes });
+        }
+        content.push(rewritten.images.length > 0 ? { ...part, text: rewritten.markdown } : part);
       } catch (error) {
         console.warn(
           `[codex-chatgpt-web] generated images could not be downloaded: ${error instanceof Error ? error.message : String(error)}`,
@@ -372,7 +376,9 @@ async function rewriteAnswerImages(
     }
     output.push({ ...item, content });
   }
-  return { ...body, output };
+  // Surface the pictures as data as well as Markdown, so a caller does not have to parse the
+  // answer text to find them. One prompt can produce several.
+  return { ...body, output, ...(images.length > 0 ? { images } : {}) };
 }
 
 export function startApiGateway(

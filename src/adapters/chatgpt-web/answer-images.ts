@@ -16,9 +16,17 @@ import {
  */
 const MARKDOWN_IMAGE = /!\[([^\]]*)\]\((https:\/\/[^)\s]+)\)/g;
 
+export interface DownloadedAnswerImage {
+  /** Signed, expiring gateway path for this picture. */
+  url: string;
+  contentType: string;
+  bytes: number;
+}
+
 export interface AnswerImageRewrite {
   markdown: string;
-  downloaded: number;
+  /** One entry per picture stored locally, in the order the answer referenced them. */
+  images: DownloadedAnswerImage[];
   failed: number;
 }
 
@@ -46,10 +54,11 @@ export async function downloadAnswerImages(
   },
 ): Promise<AnswerImageRewrite> {
   const urls = answerImageUrls(markdown);
-  if (urls.length === 0) return { markdown, downloaded: 0, failed: 0 };
+  if (urls.length === 0) return { markdown, images: [], failed: 0 };
   const store = options.store ?? new GatewayFileStore();
   const now = options.now ?? Date.now;
   const replacements = new Map<string, string>();
+  const images: DownloadedAnswerImage[] = [];
   let failed = 0;
 
   for (const url of urls) {
@@ -62,7 +71,9 @@ export async function downloadAnswerImages(
       const bytes = Buffer.from(content.base64, "base64");
       if (bytes.byteLength > MAX_GATEWAY_FILE_BYTES) throw new Error("A generated image exceeds the local file limit");
       const stored = store.store(new Uint8Array(bytes), contentType, now());
-      replacements.set(url, signGatewayFileUrl(stored.id, options.signingKey, now() + GATEWAY_FILE_URL_TTL_MS).path);
+      const link = signGatewayFileUrl(stored.id, options.signingKey, now() + GATEWAY_FILE_URL_TTL_MS).path;
+      replacements.set(url, link);
+      images.push({ url: link, contentType: stored.contentType, bytes: stored.bytes });
     } catch (error) {
       // One unreachable picture must not fail a turn that already produced an answer. The original
       // link is left in place so the caller can still see what was generated.
@@ -77,5 +88,5 @@ export async function downloadAnswerImages(
     const replacement = replacements.get(url);
     return replacement ? `![${alt}](${replacement})` : original;
   });
-  return { markdown: rewritten, downloaded: replacements.size, failed };
+  return { markdown: rewritten, images, failed };
 }
